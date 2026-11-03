@@ -44,6 +44,87 @@ pub struct Cch {
     backward: Vec<u32>,
     forward_via: Vec<u32>,
     backward_via: Vec<u32>,
+    /// What customization needs of the topology, worked out the first time.
+    lower: Option<Lower>,
+}
+
+/// A level with less work than this is done on one thread: starting threads would cost more.
+const PARALLEL_WORK: u64 = if cfg!(test) { 1 } else { 300_000 };
+
+/// For customization, the nodes below each node, and the nodes grouped by level: a node is one level
+/// above the highest of those below it, so that nodes of a level do not depend on each other.
+struct Lower {
+    /// `node[first[u]..first[u + 1]]` are the nodes below `u` (those that have it among their upward
+    /// neighbours), ascending, and `edge` the index of that edge in each.
+    first: Vec<u32>,
+    node: Vec<u32>,
+    edge: Vec<u32>,
+    by_level: Vec<u32>,
+    /// `by_level[level_start[l]..level_start[l + 1]]` are the nodes of level `l`.
+    level_start: Vec<u32>,
+}
+
+impl Lower {
+    fn new(cch: &Cch) -> Self {
+        let n = cch.nodes();
+        let mut first = vec![0u32; n + 1];
+        for head in &cch.up {
+            first[*head as usize + 1] += 1;
+        }
+        for u in 0..n {
+            first[u + 1] += first[u];
+        }
+        let (mut node, mut edge) = (vec![0u32; cch.up.len()], vec![0u32; cch.up.len()]);
+        let mut fill = first.clone();
+        let mut level = vec![0u32; n];
+        for v in 0..n {
+            for e in cch.first_up[v] as usize..cch.first_up[v + 1] as usize {
+                let u = cch.up[e] as usize;
+                node[fill[u] as usize] = v as u32;
+                edge[fill[u] as usize] = e as u32;
+                fill[u] += 1;
+                level[u] = level[u].max(level[v] + 1);
+            }
+        }
+        let levels = level.iter().max().map_or(0, |l| *l as usize + 1);
+        let mut level_start = vec![0u32; levels + 1];
+        for l in &level {
+            level_start[*l as usize + 1] += 1;
+        }
+        for l in 0..levels {
+            level_start[l + 1] += level_start[l];
+        }
+        let mut by_level = vec![0u32; n];
+        let mut at = level_start.clone();
+        for (u, l) in level.iter().enumerate() {
+            by_level[at[*l as usize] as usize] = u as u32;
+            at[*l as usize] += 1;
+        }
+        Self { first, node, edge, by_level, level_start }
+    }
+
+    /// About how much work the triangles of `u` are.
+    fn work(&self, cch: &Cch, u: u32) -> u64 {
+        let u = u as usize;
+        (self.first[u + 1] - self.first[u]) as u64 * (cch.first_up[u + 1] - cch.first_up[u] + 1) as u64
+    }
+
+    /// `nodes` in at most `parts` runs of about the same work.
+    fn split<'a>(&self, cch: &Cch, nodes: &'a [u32], total: u64, parts: usize) -> Vec<&'a [u32]> {
+        let target = total.div_ceil(parts as u64).max(1);
+        let (mut runs, mut start, mut sum) = (Vec::new(), 0, 0u64);
+        for (i, u) in nodes.iter().enumerate() {
+            sum += self.work(cch, *u);
+            if sum >= target && runs.len() + 1 < parts {
+                runs.push(&nodes[start..=i]);
+                (start, sum) = (i + 1, 0);
+            }
+        }
+        if start < nodes.len() {
+            runs.push(&nodes[start..]);
+        }
+        runs
+    }
 }
 
 /// What a query leaves for the next, per thread: the distances of the nodes it touched, stamped so
@@ -157,7 +238,7 @@ impl Cch {
         }
         first_up.push(up.len() as u32);
         let edges = up.len();
-        Self { rank, node, first_up, up, parent, forward: vec![INF; edges], backward: vec![INF; edges], forward_via: vec![NONE; edges], backward_via: vec![NONE; edges] }
+        Self { rank, node, first_up, up, parent, forward: vec![INF; edges], backward: vec![INF; edges], forward_via: vec![NONE; edges], backward_via: vec![NONE; edges], lower: None }
     }
 
     /// The topology of `turns` and the weights of its arcs.
@@ -194,8 +275,15 @@ impl Cch {
     }
 
     /// Sets the weight of every edge of the hierarchy from the weights of the arcs of `turns`, lowest
-    /// node first: an edge is final once every triangle below it has been looked at.
+    /// node first: an edge is final once every triangle below it has been looked at. The nodes that
+    /// do not depend on each other are done together, on all the processors there are.
     pub fn customize(&mut self, turns: &TurnGraph) {
+        let threads = std::thread::available_parallelism().map_or(1, |n| n.get());
+        self.customize_with(turns, threads);
+    }
+
+    /// `customize` with a number of threads; the result does not depend on it.
+    pub fn customize_with(&mut self, turns: &TurnGraph, threads: usize) {
         self.forward.fill(INF);
         self.backward.fill(INF);
         self.forward_via.fill(NONE);
@@ -215,25 +303,71 @@ impl Cch {
                 }
             }
         }
-        for v in 0..self.nodes() {
-            let (start, end) = (self.first_up[v] as usize, self.first_up[v + 1] as usize);
-            for i in start..end {
-                for j in i + 1..end {
-                    let (u, w) = (self.up[i], self.up[j]);
-                    let e = self.find(u, w);
-                    // u -> v -> w, and w -> v -> u.
-                    let (through, back) = (self.backward[i] + self.forward[j], self.backward[j] + self.forward[i]);
-                    if through < self.forward[e] {
-                        self.forward[e] = through;
-                        self.forward_via[e] = v as u32;
-                    }
-                    if back < self.backward[e] {
-                        self.backward[e] = back;
-                        self.backward_via[e] = v as u32;
+        let lower = match self.lower.take() {
+            Some(lower) => lower,
+            None => Lower::new(self),
+        };
+        // The nodes of level 0 have nothing below them: their edges are final.
+        for level in 1..lower.level_start.len() - 1 {
+            let nodes = &lower.by_level[lower.level_start[level] as usize..lower.level_start[level + 1] as usize];
+            let cost: u64 = nodes.iter().map(|u| lower.work(self, *u)).sum();
+            let chunks = if threads > 1 && cost >= PARALLEL_WORK { lower.split(self, nodes, cost, threads) } else { vec![nodes] };
+            let done: Vec<Vec<[u32; 4]>> = if chunks.len() == 1 {
+                vec![self.triangles(&lower, chunks[0])]
+            } else {
+                let this = &*self;
+                let lower = &lower;
+                std::thread::scope(|scope| {
+                    let handles: Vec<_> = chunks.iter().map(|chunk| scope.spawn(move || this.triangles(lower, chunk))).collect();
+                    handles.into_iter().map(|h| h.join().expect("a customization thread")).collect()
+                })
+            };
+            for (chunk, values) in chunks.iter().zip(done) {
+                let mut at = 0;
+                for u in *chunk {
+                    for e in self.first_up[*u as usize] as usize..self.first_up[*u as usize + 1] as usize {
+                        let [forward, backward, forward_via, backward_via] = values[at];
+                        (self.forward[e], self.backward[e], self.forward_via[e], self.backward_via[e]) = (forward, backward, forward_via, backward_via);
+                        at += 1;
                     }
                 }
             }
         }
+        self.lower = Some(lower);
+    }
+
+    /// The edges of `nodes` (one after the other) with the triangles below them taken in. A node
+    /// reads only edges of lower levels, which are final, so a level can be split among threads.
+    fn triangles(&self, lower: &Lower, nodes: &[u32]) -> Vec<[u32; 4]> {
+        let mut out = Vec::new();
+        for &u in nodes {
+            let base = self.first_up[u as usize] as usize;
+            let own = out.len();
+            out.extend((base..self.first_up[u as usize + 1] as usize).map(|e| [self.forward[e], self.backward[e], self.forward_via[e], self.backward_via[e]]));
+            for k in lower.first[u as usize] as usize..lower.first[u as usize + 1] as usize {
+                let (v, below) = (lower.node[k], lower.edge[k] as usize);
+                let mut e = base;
+                for above in below + 1..self.first_up[v as usize + 1] as usize {
+                    let w = self.up[above];
+                    while self.up[e] < w {
+                        e += 1;
+                    }
+                    debug_assert_eq!(self.up[e], w, "a shortcut closes every triangle");
+                    let slot = &mut out[own + e - base];
+                    // u -> v -> w, and w -> v -> u.
+                    let (through, back) = (self.backward[below] + self.forward[above], self.backward[above] + self.forward[below]);
+                    if through < slot[0] {
+                        slot[0] = through;
+                        slot[2] = v;
+                    }
+                    if back < slot[1] {
+                        slot[1] = back;
+                        slot[3] = v;
+                    }
+                }
+            }
+        }
+        out
     }
 
     /// The length of the shortest path from node `from` to node `to` of the turn graph, in the weights
@@ -425,7 +559,7 @@ impl Cch {
             }
             parent.push(heads.first().copied().unwrap_or(NONE));
         }
-        Ok(Self { rank, node, first_up, up, parent, forward: vec![INF; edges], backward: vec![INF; edges], forward_via: vec![NONE; edges], backward_via: vec![NONE; edges] })
+        Ok(Self { rank, node, first_up, up, parent, forward: vec![INF; edges], backward: vec![INF; edges], forward_via: vec![NONE; edges], backward_via: vec![NONE; edges], lower: None })
     }
 }
 
@@ -592,5 +726,18 @@ mod tests {
         std::fs::write(&path, damaged).unwrap();
         assert!(Cch::read(&path, &graph).is_err());
         assert!(Cch::read(&dir.path().join("missing.bin"), &graph).is_err());
+    }
+
+    #[test]
+    fn threads_change_the_time_not_the_weights() {
+        let graph = random_graph(400, 3, &mut Random(2024));
+        let mut one = Cch::topology(&graph);
+        one.customize_with(&graph, 1);
+        for threads in [2, 3, 8] {
+            let mut many = Cch::topology(&graph);
+            many.customize_with(&graph, threads);
+            assert_eq!((&many.forward, &many.backward, &many.forward_via, &many.backward_via), (&one.forward, &one.backward, &one.forward_via, &one.backward_via), "{threads} threads");
+        }
+        check(&graph, &one);
     }
 }

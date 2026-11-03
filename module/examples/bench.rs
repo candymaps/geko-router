@@ -83,9 +83,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Err(_) => (Cch::topology(&turns), "worked out"),
     };
     let built = t.elapsed();
-    let t = Instant::now();
-    cch.customize(&turns);
-    println!("CCH: {} nodes, {} shortcuts, depth {}; order and topology {how} in {} ms, customization {} ms", cch.nodes(), cch.edges(), cch.depth(), built.as_millis(), t.elapsed().as_millis());
+    let t0 = Instant::now();
+    cch.customize_with(&turns, 1);
+    let first = t0.elapsed();
+    let mut times = Vec::new();
+    for threads in [1, 2, 4, 8, std::thread::available_parallelism().map_or(1, |n| n.get())] {
+        let t = Instant::now();
+        cch.customize_with(&turns, threads);
+        times.push(format!("{} ms on {threads}", t.elapsed().as_millis()));
+    }
+    println!("customization: the first {} ms (with the preparation); then {}", first.as_millis(), times.join(", "));
+    println!("CCH: {} nodes, {} shortcuts, depth {}; order and topology {how} in {} ms", cch.nodes(), cch.edges(), cch.depth(), built.as_millis());
     let mut scratch = Scratch::new(&cch);
     let (mut fast, mut full, mut wrong) = (Vec::new(), Vec::new(), 0usize);
     let wall = Instant::now();
