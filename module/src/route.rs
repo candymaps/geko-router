@@ -9,6 +9,7 @@
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap};
 
+use crate::cch::{Cch, Scratch};
 use crate::graph::{Graph, haversine_m};
 use crate::snap::Snap;
 use crate::turn::TurnGraph;
@@ -115,9 +116,69 @@ pub fn route(graph: &Graph, turns: &TurnGraph, from: &[Snap], to: &[Snap]) -> Op
             (edges, start, t)
         }
     };
-    let (geometry, distance_m) = geometry(graph, &edges, start, end);
-    Some(Route { duration_s: total as f64 / 10.0, distance_m, geometry, edges })
+    Some(assemble(graph, edges, start, end, total))
 }
+
+fn assemble(graph: &Graph, edges: Vec<u32>, start: &Snap, end: &Snap, total: i64) -> Route {
+    let (geometry, distance_m) = geometry(graph, &edges, start, end);
+    Route { duration_s: total as f64 / 10.0, distance_m, geometry, edges }
+}
+
+struct Candidate<'a> {
+    total: i64,
+    from: &'a Snap,
+    to: &'a Snap,
+    edges: Vec<u32>,
+}
+
+/// The best way from the points `from` to the points `to` with a customizable contraction
+/// hierarchy. Its queries do not search the graph, they walk the elimination tree. `edges` is
+/// only filled in when `with_path`: finding the path costs about as much as finding its length.
+fn cch_best<'a>(turns: &TurnGraph, cch: &Cch, scratch: &mut Scratch, from: &'a [Snap], to: &'a [Snap], with_path: bool) -> Option<Candidate<'a>> {
+    let mut best: Option<Candidate<'a>> = None;
+    for f in from {
+        // The part of its edge that a path already has behind it, and the part of the last one before the point.
+        let behind = part(f.fraction, turns.edge_ds[f.edge as usize]);
+        for t in to {
+            let ahead = part(t.fraction, turns.edge_ds[t.edge as usize]);
+            if f.edge == t.edge && t.fraction >= f.fraction {
+                let total = part(t.fraction - f.fraction, turns.edge_ds[f.edge as usize]);
+                if best.as_ref().is_none_or(|b| total < b.total) {
+                    best = Some(Candidate { total, from: f, to: t, edges: vec![f.edge] });
+                }
+            }
+            // Behind the start on its own edge, it has to leave and come back round: by each turn.
+            let leaves: Vec<(u32, u32)> = if f.edge == t.edge { turns.arcs_from(f.edge).iter().map(|a| (a.head, a.weight_ds)).collect() } else { vec![(f.edge, 0)] };
+            for (head, turn) in leaves {
+                let Some((distance, meet)) = cch.query(scratch, head, t.edge) else { continue };
+                let total = turn as i64 + distance as i64 - behind + ahead;
+                if best.as_ref().is_none_or(|b| total < b.total) {
+                    let mut edges = Vec::new();
+                    if with_path {
+                        edges = cch.path(scratch, head, meet);
+                        if head != f.edge {
+                            edges.insert(0, f.edge);
+                        }
+                    }
+                    best = Some(Candidate { total, from: f, to: t, edges });
+                }
+            }
+        }
+    }
+    best
+}
+
+/// The fastest route, the same as `route`.
+pub fn route_cch(graph: &Graph, turns: &TurnGraph, cch: &Cch, scratch: &mut Scratch, from: &[Snap], to: &[Snap]) -> Option<Route> {
+    let best = cch_best(turns, cch, scratch, from, to, true)?;
+    Some(assemble(graph, best.edges, best.from, best.to, best.total))
+}
+
+/// Only how long the fastest route takes, in seconds: what a matrix of routes asks for.
+pub fn duration_cch(turns: &TurnGraph, cch: &Cch, scratch: &mut Scratch, from: &[Snap], to: &[Snap]) -> Option<f64> {
+    cch_best(turns, cch, scratch, from, to, false).map(|b| b.total as f64 / 10.0)
+}
+
 
 /// The points of the path, cut at where it starts and ends, and its length.
 fn geometry(graph: &Graph, edges: &[u32], start: &Snap, end: &Snap) -> (Vec<[f64; 2]>, f64) {
@@ -276,6 +337,53 @@ mod tests {
         let to = snapper.snap(&g, 0.01, 0.0005, 100.0);
         assert!(!from.is_empty() && !to.is_empty());
         assert_eq!(route(&g, &t, &from, &to), None);
+    }
+
+    /// Both algorithms on the same pairs of points of a network: the same time, and a route that
+    /// really goes from one to the other.
+    fn same_as_dijkstra(graph: &Graph, turns: &TurnGraph, points: &[(f64, f64)]) {
+        let cch = Cch::new(turns);
+        let mut scratch = Scratch::new(&cch);
+        let snapper = Snapper::new(graph, vec![true; graph.edges.len()]);
+        for a in points {
+            for b in points {
+                let (from, to) = (snapper.snap(graph, a.0, a.1, 100.0), snapper.snap(graph, b.0, b.1, 100.0));
+                let expected = route(graph, turns, &from, &to);
+                let got = route_cch(graph, turns, &cch, &mut scratch, &from, &to);
+                assert_eq!(got.as_ref().map(|r| r.duration_s), expected.as_ref().map(|r| r.duration_s), "{a:?} -> {b:?}");
+                assert_eq!(duration_cch(turns, &cch, &mut scratch, &from, &to), expected.as_ref().map(|r| r.duration_s));
+                if let (Some(got), Some(expected)) = (got, expected) {
+                    assert!((got.distance_m - expected.distance_m).abs() < 1.0, "{a:?} -> {b:?}");
+                    let (g, e) = (got.geometry[0], expected.geometry[0]);
+                    assert!((g[0] - e[0]).abs() < 1e-9 && (g[1] - e[1]).abs() < 1e-9, "{a:?} -> {b:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_hierarchy_gives_the_same_routes_on_a_crossing() {
+        let (g, t) = cross();
+        same_as_dijkstra(&g, &t, &[(0.0, -0.0005), (0.0, 0.0005), (0.0005, 0.0), (-0.0005, 0.0), (0.0, -0.0008), (0.0, -0.0002)]);
+    }
+
+    #[test]
+    fn the_hierarchy_goes_round_a_one_way_ring() {
+        let (g, t) = network(&[
+            node(1, 0.0, 0.0),
+            node(2, 0.0, 0.001),
+            node(3, 0.001, 0.001),
+            node(4, 0.001, 0.0),
+            way(10, &[1, 2, 3, 4, 1], &[("oneway", "yes")]),
+        ]);
+        let cch = Cch::new(&t);
+        let mut scratch = Scratch::new(&cch);
+        let at = |fraction| Snap { edge: 0, fraction, distance_m: 0.0, point: [0.0, 0.0] };
+        for (from, to) in [(0.8, 0.2), (0.2, 0.8), (0.5, 0.5)] {
+            let expected = route(&g, &t, &[at(from)], &[at(to)]).unwrap();
+            let got = route_cch(&g, &t, &cch, &mut scratch, &[at(from)], &[at(to)]).unwrap();
+            assert_eq!(got.duration_s, expected.duration_s, "{from} -> {to}");
+        }
     }
 
     #[test]

@@ -11,7 +11,8 @@
 use std::time::Instant;
 
 use geko_module_router::graph_io;
-use geko_module_router::route::route;
+use geko_module_router::cch::{Cch, Scratch};
+use geko_module_router::route::{duration_cch, route, route_cch};
 use geko_module_router::scc::in_large_component;
 use geko_module_router::snap::Snap;
 use geko_module_router::turn::{self, TurnProfile};
@@ -74,5 +75,34 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let (duration, distance) = found.iter().fold((0.0, 0.0), |a, r| (a.0 + r.0, a.1 + r.1));
         println!("routes: {:.1} km and {:.1} min on average, {:.1} km/h", distance / n / 1000.0, duration / n / 60.0, distance / duration * 3.6);
     }
+
+    let t = Instant::now();
+    let mut cch = Cch::new(&turns);
+    let built = t.elapsed();
+    let t = Instant::now();
+    cch.customize(&turns);
+    println!("CCH: {} nodes, {} shortcuts, depth {}; order and topology {} ms, customization {} ms", cch.nodes(), cch.edges(), cch.depth(), built.as_millis(), t.elapsed().as_millis());
+    let mut scratch = Scratch::new(&cch);
+    let (mut fast, mut full, mut wrong) = (Vec::new(), Vec::new(), 0usize);
+    let wall = Instant::now();
+    for ((a, b), expected) in pairs.iter().zip(&results) {
+        let t = Instant::now();
+        let d = duration_cch(&turns, &cch, &mut scratch, std::slice::from_ref(a), std::slice::from_ref(b));
+        fast.push(t.elapsed().as_micros());
+        let t = Instant::now();
+        let r = route_cch(&graph, &turns, &cch, &mut scratch, std::slice::from_ref(a), std::slice::from_ref(b));
+        full.push(t.elapsed().as_micros());
+        let want = expected.1.map(|r| r.0);
+        if d != want || r.as_ref().map(|r| r.duration_s) != want {
+            wrong += 1;
+        }
+    }
+    let total = wall.elapsed();
+    fast.sort_unstable();
+    full.sort_unstable();
+    let pct = |v: &[u128], p: f64| v[((v.len() as f64 * p) as usize).min(v.len() - 1)];
+    println!("CCH vs Dijkstra: {} of {} differ", wrong, queries);
+    println!("CCH duration only: median {} us, p99 {} us", pct(&fast, 0.5), pct(&fast, 0.99));
+    println!("CCH with route:    median {} us, p99 {} us ({:.0} queries/s, one thread)", pct(&full, 0.5), pct(&full, 0.99), queries as f64 / total.as_secs_f64() * 2.0);
     Ok(())
 }

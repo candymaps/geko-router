@@ -79,7 +79,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let (mut duration, mut distance) = (Vec::new(), Vec::new());
-    let mut rows: Vec<(f64, f64, f64, [f64; 2], [f64; 2])> = Vec::new();
+    type Row = (f64, f64, f64, [f64; 2], [f64; 2]);
+    let mut rows: Vec<Row> = Vec::new();
     let (mut only_ours, mut only_osrm, mut neither) = (0, 0, 0);
     for pair in &pairs {
         let ours = {

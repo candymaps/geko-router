@@ -4,6 +4,7 @@
 
 mod config;
 mod extracts;
+pub mod cch;
 pub mod graph;
 pub mod graph_io;
 pub mod osm;
