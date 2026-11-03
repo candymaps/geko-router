@@ -1,0 +1,28 @@
+# What the OSM source needs to know about Spain: the road network comes from the same extracts as
+# the geocoder. Its regions carry no ISO 3166-2 code in the Geofabrik index, and the Canary Islands
+# are an extract of Africa, not of Spain.
+
+# The extracts whose union is the whole country.
+country = ["spain", "canary-islands"]
+
+# The extract of each region; a region not listed takes that of the region that contains it.
+[regions]
+ES-AN = "andalucia"
+ES-AR = "aragon"
+ES-AS = "asturias"
+ES-CB = "cantabria"
+ES-CM = "castilla-la-mancha"
+ES-CL = "castilla-y-leon"
+ES-CT = "cataluna"
+ES-CE = "ceuta"
+ES-EX = "extremadura"
+ES-GA = "galicia"
+ES-IB = "islas-baleares"
+ES-RI = "la-rioja"
+ES-MD = "madrid"
+ES-ML = "melilla"
+ES-MC = "murcia"
+ES-NC = "navarra"
+ES-PV = "pais-vasco"
+ES-VC = "valencia"
+ES-CN = "canary-islands"
