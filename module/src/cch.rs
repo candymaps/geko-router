@@ -1,4 +1,4 @@
-//! Customizable Contraction Hierarchies on the turn graph (docs/ROUTER_PLAN.md of the host).
+//! Customizable Contraction Hierarchies on the turn graph (docs/ROUTER_PLAN.md).
 //!
 //! Three phases, each with its own cost:
 //!

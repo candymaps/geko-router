@@ -1,0 +1,273 @@
+# Módulo `geko-router`: plan
+
+Estado (2026-11-04): en desarrollo, en la rama `feature/router-module` de `candymaps/geko-router`, sin publicar. Lo hecho y lo que falta está en «Seguimiento». Las decisiones abiertas están al final.
+
+## Objetivo
+
+Un módulo de enrutamiento de `geko`, en Rust, que mejore a OSRM con los mismos objetivos del proyecto: **velocidad, eficiencia y calidad**. Vive en su propio repositorio (`candymaps/geko-router`), se publica como artefacto firmado y se carga como `DylibModule`, según [MODULES_PLAN.md](https://github.com/candymaps/geko/blob/dev/docs/MODULES_PLAN.md) del host. El host no se toca: rutas bajo `/router/`, configuración en `geko-router.toml`, parte propia del bundle.
+
+Que sea más rápido que OSRM es una **hipótesis**, no un dato. Se da por cierta solo con la medición A/B de la fase 1 (sección «Medición»).
+
+## Reparto
+
+| | Host (`candymaps/geko`) | Módulo (`candymaps/geko-router`) |
+|---|---|---|
+| Código | Lo de siempre: descarga y carga del módulo, bundles, HTTP común, atribución | Lectura del OSM, grafo, índice, consultas, `/router/v1/*`, caché, órdenes de depuración |
+| Datos | Ninguno | Packs de país (`countries/<país>/`), incluidos los de tráfico |
+| Contrato | `geko-module-sdk` (sin cambios previstos) | `describe`, `plan`, `fetch`, `build`, `load`, `handle`, `metrics`… |
+
+Regla de siempre: lo que solo tiene sentido para el router (grafo, perfiles, proveedores de tráfico) vive en el módulo. Cualquier cambio que pida tocar el contrato se trata como cambio de contrato (AGENTS.md del host).
+
+## Fuentes de datos
+
+- **Red viaria:** OpenStreetMap, el mismo extracto que ya baja el geocoder (Geofabrik, por ámbito). El módulo declara sus propias descargas con el `Downloader` del host; la caché de descargas evita bajar dos veces el mismo fichero.
+- **Tráfico:** en **packs de país**, igual que CartoCiudad en el geocoder (sección siguiente).
+
+## Datos de tráfico en packs por país
+
+Los datos de tráfico dependen del país: cada administración publica en un formato, con una cobertura y una licencia distintas. Por eso, como las fuentes de CartoCiudad, **van en el pack del país** y el motor no sabe de ninguna fuente concreta.
+
+```
+countries/es/
+├── pack.toml             # país, versión, perfiles por defecto, calendario (festivos), zona horaria
+├── data/
+│   ├── road-classes.toml # equivalencias de clases de vía para velocidades por defecto
+│   ├── calendar.toml     # festivos nacionales y por región (para los perfiles horarios)
+│   └── regions.toml      # particiones del grafo (provincias)
+├── sources/
+│   ├── osm.toml          # extractos de OSM del país (igual que el del geocoder)
+│   ├── madrid-sensors.toml   # tráfico en vivo: sensores de Madrid
+│   └── dgt-datex2.toml       # incidencias y cortes de la DGT
+├── golden/               # rutas de referencia con y sin tráfico
+└── tests/
+```
+
+Como en el geocoder, el pack es **datos, no código**: lo que cambia entre países es una declaración TOML (`kind`, URL, licencia, formato, frecuencia, cómo se casa el dato con el grafo). El código genérico vive en proveedores por `kind` (`datex2`, `csv-sensors`, `json-sensors`, `ogc-api`…). Añadir un país o una fuente nueva de un tipo ya conocido **no toca el motor**. Un tipo de fuente nuevo es un proveedor nuevo, y no se extrae un trait hasta que haya una segunda implementación real (regla de abstracción selectiva); los dos primeros tipos, sensores y DATEX II, ya lo son.
+
+Cada declaración de fuente lleva, como la de CartoCiudad, `license = { name, attribution, url }`, que entra en el manifiesto del bundle y en `/v1/attribution`. Cada una se puede anular o desactivar desde `geko-router.toml` (`[sources.<nombre>] enabled = false`). Se publican firmados en `ghcr.io/candymaps/geko-router/countries/<país>` con el mecanismo genérico de `geko-artifact`, con etiqueta `pack-<versión>` y la misma regla de inmutabilidad que los del geocoder.
+
+### Tres capas de tráfico
+
+Cada capa es opcional y degrada a la anterior si falta:
+
+1. **Perfil histórico** (fase de generación): velocidad típica por arista, hora y día de la semana, aprendida de las mediciones de los sensores abiertos del país y ligada al calendario del pack. Cubre lo que se haya medido alguna vez; el resto usa la velocidad libre del perfil. Es la capa más barata y la que más aporta por sí sola.
+2. **Sensores en vivo** (servicio): cada punto de medida se casa con una o varias aristas del grafo (map matching por proximidad, sentido y clase de vía, hecho una vez al generar) y su dato modifica el peso. Un dato que caduca (TTL por fuente) decae hacia el perfil histórico.
+3. **Incidencias y cortes** (servicio): penalizan o cierran aristas, con su vigencia.
+
+Los pesos nuevos se publican por **recustomización** (ver «Algoritmo») y se intercambian con `arc-swap`, sin parar el servicio y sin reiniciar. El refresco corre en una tarea de fondo con su propio calendario por fuente.
+
+### Honradez de la cobertura
+
+No existe un servicio gratuito y libre que dé velocidad por tramo en todas las carreteras de un país. Cada respuesta indica qué parte de la ruta tuvo dato en vivo, histórico o solo velocidad libre (`traffic.coverage`), para que el cliente no confunda «sin retenciones» con «sin datos».
+
+### Fuentes candidatas (por verificar antes de escribir su pack)
+
+Hallazgos de la investigación del 2026-11-03; **todo lo marcado «sin confirmar» debe comprobarse en la ficha de la fuente antes de comprometerse**.
+
+| País | Fuente | Qué da | Licencia | Estado |
+|---|---|---|---|---|
+| ES | Ayuntamiento de Madrid, datos abiertos | Más de 4.000 puntos de medida, cada 5 min, intensidad y nivel de servicio (0 fluido, 1 lento, 2 retenciones, 3 congestión); no velocidad directa | CC BY 4.0 en el recurso de intensidad | Revisar cada conjunto y el cálculo del nivel (umbrales por punto) |
+| ES | DGT, Punto de Acceso Nacional (`nap.dgt.es`) | Paneles y cámaras en DATEX II v3.6/3.7 (1 min); incidencias | Sin confirmar (aparecen licencias Creative Commons, sin variante) | Varios conjuntos marcados obsoletos; no se halló velocidad ni flujo por tramo |
+| LU | cita.lu | Eventos en DATEX II (Alert-C) | Sin confirmar | No se halló flujo ni velocidad |
+| NL | NDW | Flujo, velocidad, tiempos de viaje, colas | Sin confirmar | Candidato si se añade el país |
+| FI | Digitraffic | JSON y DATEX II | Sin confirmar | Candidato |
+| EE, LT | Tarktee; servicio de intensidad | Flujo en vivo | Registro gratuito (EE) | Candidatos |
+
+Las fuentes comerciales (Google, TomTom, HERE) y de socio (Waze) no son de uso libre y quedan fuera.
+
+### Licencias (revisión del 2026-11-03)
+
+Revisión de lectura, no asesoramiento jurídico. geko no aloja estos datos: cada instalación los descarga de la fuente, con `accept_licenses = true`, como CartoCiudad.
+
+**Madrid (sensores): usable.**
+- La ficha del conjunto `202087-0-trafico-intensidad` dice «Creative Commons Attribution 4.0 International (CC BY 4.0)».
+- CC BY 4.0 permite uso comercial y obras derivadas con atribución. La atribución va a `/v1/attribution`: «Ayuntamiento de Madrid, datos abiertos (CC BY 4.0)».
+- Pendiente: no pude abrir la página de «Condiciones de uso» del portal (mi URL dio 404), y en 2016 el Ayuntamiento tenía una licencia propia con condiciones por conjunto. Hay que leer esa página y la ficha del conjunto de histórico antes de publicar el pack.
+- Cuidado con la mezcla de licencias, igual que con CartoCiudad (CC BY) junto a OSM (ODbL): los pesos de tráfico y el grafo de OSM viajan en el mismo bundle. Conviene fijar qué parte del bundle es obra derivada de OSM (ODbL) y cuál lleva CC BY, y declararlo en el manifiesto.
+
+**DGT (incidencias): usable con reservas.**
+- La ficha del NAP dice «Creative Commons Attribution» (enlaza a la Open Definition, sin versión) y «Licence and Free of charge». Sin autenticación.
+- Pero las condiciones de uso que enlaza esa ficha, el aviso legal de la DGT, dicen que los contenidos son titularidad de la DGT y tratan como infracción «la reproducción, distribución, comercialización o transformación no autorizadas», salvo uso personal y privado. No menciona reutilización, el Real Decreto 1495/2011 ni Creative Commons. Las dos cosas no encajan.
+- Mientras la DGT no lo aclare por escrito, la fuente queda **desactivada por defecto** en el pack (`enabled = false`). Pedir a la DGT (contacto del NAP) que confirme: licencia y versión, uso comercial, obras derivadas, y la atribución exacta.
+- Cobertura: red estatal, salvo País Vasco y Cataluña, que publican las suyas (en el NAP: «Incidencias DT-GV» e «Incidencias SCT»). Fuera de la red estatal, sin dato.
+- No trae velocidad ni flujo: solo situaciones (cortes de calzada, de carril, obras, retenciones `slowTraffic`).
+
+### Fuentes verificadas en el pack de España
+
+Comprobadas con una petición real el 2026-11-03:
+
+| Fuente | URL | Tamaño | Cabeceras | Cadencia |
+|---|---|---|---|---|
+| Madrid, sensores | `https://informo.madrid.es/informo/tmadrid/pm.xml` | 2,2 MB | `ETag`, `Last-Modified` | ~5 min |
+| DGT, incidencias v3.7 | `https://nap.dgt.es/datex2/v3/dgt/SituationPublication/datex2_v37.xml` | 7 MB (220 KB con gzip) | `Cache-Control: max-age=39`, sin `ETag` | 1 min |
+
+La DGT pide `Accept-Encoding: gzip`, o serían unos 10 GB al día. Madrid publica las coordenadas en ETRS89 UTM 30N (EPSG:25830) con coma decimal.
+
+## Algoritmo
+
+- **CCH (Customizable Contraction Hierarchies).** La topología (orden de nodos, contracción) se calcula una vez al generar; los pesos se aplican en una fase de **customización** que es rápida y se repite cuando cambia el tráfico. Frente a OSRM: su CH obliga a recontraer con cada cambio de pesos, y su MLD admite pesos nuevos pero consulta más lento; su tráfico es experimental y pide recargar el servidor.
+- Referencia pública (reimplementación de terceros, no medición propia): recustomización completa en el orden de decenas de ms tras un cambio de arista, con consulta como punto flojo conocido. Esto se **mide con el grafo real** (España), no se asume.
+- **Grafo:** con costes por giro y restricciones de giro de OSM desde el principio (modelarlo después obliga a rehacer el grafo). Perfiles en TOML (coche primero; bici, a pie y camión después), sin scripts.
+- **Memoria:** ficheros mapeados (`mmap`), como el índice del geocoder, para arranque inmediato y que la caché de páginas del sistema sea compartida. Particiones por provincia/región con el mismo mecanismo de sellos que el resto.
+- **Asignador:** mimalloc declarado en la `.so` del módulo (ver MODULES_PLAN.md, «Asignador»).
+
+## API (`/router/v1/…`)
+
+Fase 1: `route` (con alternativas y pasos), `nearest`, `table` (matriz muchos-a-muchos). Después: `match` (map matching), `isochrone`, `trip`. Todas bajo `/router/`, con su `openapi.yaml` y su demo en `/router/`, como el geocoder.
+
+Parámetros de tráfico: `traffic=none|historical|live` y `depart_at` (RFC 3339) para ruta futura con perfil histórico. Por defecto, `live` si hay dato; la respuesta lleva `traffic.coverage`.
+
+Formato: propio y documentado (ver decisiones abiertas).
+
+## Configuración (`geko-router.toml`)
+
+```toml
+[packs]
+registry = "ghcr.io/candymaps/geko-router/countries"
+
+[profiles]
+default = "car"
+
+[traffic]
+enabled = true
+live = true
+
+[sources.madrid-sensors]    # cualquier clave de countries/es/sources/madrid-sensors.toml
+enabled = true
+
+[serve]
+countries = []
+preload = true
+```
+
+Las opciones que cambian lo generado (fuentes, perfiles) entran en los sellos de las etapas. Una opción desconocida es un error que nombra el fichero y la clave, como en el geocoder.
+
+## Bundle y generación
+
+Etapas por país con sellos de entrada (hash de código y de entradas, como PROJECT.md §8), deterministas:
+
+1. Lectura de OSM y construcción del grafo con giros y restricciones.
+2. Orden de nodos y contracción (CCH): lo caro, se hace una vez.
+3. Casado de los puntos de medida de las fuentes de tráfico del pack con aristas.
+4. Perfiles históricos (si hay mediciones descargables).
+5. Índice espacial para `nearest` y snapping (R-tree de Hilbert, como la inversa del geocoder).
+
+El tráfico en vivo **no** va en el bundle, que es inmutable: se lee en servicio y vive en memoria.
+
+## Medición
+
+Antes de afirmar «más rápido que OSRM»:
+
+- Mismo extracto OSM, misma máquina, consultas idénticas, 16 peticiones concurrentes, turnos alternos (regla de AGENTS.md: nunca comparar con una medición de otro momento).
+- Rutas cortas, medias y largas; `table` de 10×10 a 1.000×1.000; arranque en frío y en caliente; memoria residente; tamaño del bundle; tiempo de generación.
+- Con tráfico: tiempo de recustomización y consulta durante la customización.
+- Calidad: mismos pares origen-destino contra OSRM y contra una referencia (diferencia de duración y distancia, rutas distintas). La velocidad sin calidad no cuenta.
+- Cada intento, funcione o no, se anota en «Optimizaciones» del repositorio del módulo.
+
+## Pasos
+
+Cada paso deja resultados verificables antes del siguiente.
+
+1. **Esqueleto del módulo.** Repositorio, `describe`, `plan`/`fetch` del OSM, `handle` que responde 503, conformidad de la SDK en verde. Publicación firmada.
+2. **Grafo y perfil de coche.** Grafo con giros y restricciones, `nearest`, golden de Baleares (`ES-PM`) y Luxemburgo.
+3. **CCH y `route`.** Orden, contracción, customización, consulta. Primera medición A/B contra OSRM con Baleares, luego España completa.
+4. **`table`** y la segunda medición.
+5. **Packs de país**: formato `pack.toml`/`sources/`, publicación firmada, packs `es` y `lu` solo con OSM y perfil (sin tráfico aún).
+6. **Tráfico: histórico y en vivo.** Proveedores por `kind` (`csv-sensors`/`json-sensors`), casado de sensores, recustomización en caliente, `traffic.coverage`. Primer pack con tráfico real: la fuente de Madrid.
+7. **Incidencias** (DATEX II): cortes y penalizaciones.
+8. **`match`, isócronas, bici, a pie, camión.**
+9. **Documentación** en cada paso: este plan, PROJECT.md (módulos, §14 hoja de ruta y §16 pendientes), README del host (módulo nuevo) y del módulo.
+
+## Seguimiento
+
+Lista de trabajo, en el orden previsto. Al cerrar un punto se marca aquí, con su commit o su medición. Los marcados con **[decisión]** o **[gestión]** dependen del propietario del proyecto.
+
+**Hecho (2026-11-04):** grafo con giros, restricciones y ferris; CCH con customización en caliente; `v1/route`, `v1/nearest`, `v1/table` (una consulta por celda, 100×100 como máximo) y `v1/status`; tráfico en vivo de los sensores de Madrid, opcional y desactivado por defecto, con `traffic.coverage`.
+
+**Primera medición contra OSRM (2026-11-03, Baleares, OSRM v26.11.0, una sola máquina):** geko, OSRM y `wrk` en contenedores con la misma red, servidores en 8 núcleos, 16 conexiones con keep-alive, mismas URLs y rondas alternas. Se descarta una ronda de OSRM CH que duró 9,66 min, probablemente por una suspensión del equipo.
+
+| | geko | OSRM CH | OSRM MLD |
+|---|---|---|---|
+| Sin geometría, peticiones/s | 9.061–9.866 | 9.343–9.579 | 7.489–7.678 |
+| Sin geometría, p99 | 3,1–3,4 ms | 2,5–2,9 ms | 3,0 ms |
+| Con geometría, peticiones/s | 5.103–5.702 | 3.578–4.044 | 2.946–3.498 |
+| Con geometría, p99 | 5,4–6,6 ms | 6,9–8,5 ms | 7,9–13,3 ms |
+| RAM en reposo | 724 MB | ~85 MB | ~85 MB |
+| RAM tras la carga | 851 MB (pico 1,1 GB) | 101 MB | 115 MB |
+
+Calidad, 1.000 pares contra OSRM CH: distancia con mediana 0,999 (el 86,5 % a menos del 2 %), duración con mediana 0,800. CCH coincide con Dijkstra en todos los pares comprobados. «Más rápido que OSRM» sigue sin confirmarse: empate con CH sin geometría, y falta España completa.
+
+### A. Base sólida y medida
+
+- [ ] 1. Reducir la memoria y el tiempo de carga (724 MB y 3,4 s en Baleares, con un grafo de 28 MB en disco). A esa escala España no cabría en 15 GB, así que va antes del punto 4.
+- [ ] 2. Pasar a `mmap` el grafo y la jerarquía.
+- [ ] 3. Añadir mimalloc en la `.so` del módulo.
+- [ ] 4. Medir España completa contra OSRM: generación, RAM, consultas y customización, incluido si los hilos ayudan (en Baleares no mejora de 1 a 16).
+- [ ] 5. Calibrar las duraciones con tiempos reales: salen un 20 % por debajo de OSRM.
+- [ ] 6. Revisar en un mapa los pares con más diferencia de distancia (ratio de 0,59 a 1,60).
+- [ ] 7. Arreglar el ejemplo `load` o sustituirlo por `wrk`: abre una conexión por petición y oculta fallos, y sus cifras no valen.
+
+### B. API de la fase 1
+
+- [ ] 8. **[decisión]** Formato de la API: propio o compatible con OSRM.
+- [ ] 9. Alternativas y pasos en `route`.
+- [ ] 10. `table` con un algoritmo muchos-a-muchos, hasta 1.000×1.000, y segunda medición.
+- [ ] 11. Índice espacial del plan (R-tree de Hilbert), o decidir que basta la rejilla actual.
+- [ ] 12. `openapi.yaml` y demo en `/router/`.
+
+### C. Packs de país
+
+- [ ] 13. Cargador de packs: hoy `countries/es/` no se lee y `road-classes` va incrustado.
+- [ ] 14. Opciones del plan en `geko-router.toml`: `[packs]`, `[profiles]`, `[serve]` y `[sources.<nombre>]`.
+- [ ] 15. Completar el pack `es`: `regions.toml`, golden y tests.
+- [ ] 16. Pack `lu`.
+- [ ] 17. Particiones por provincia con sellos.
+- [ ] 18. Publicación firmada de los packs en ghcr.
+
+### D. Tráfico completo
+
+- [ ] 19. Probar la capa en vivo con el feed real de Madrid, de punta a punta.
+- [ ] 20. Calibrar la conversión de nivel de servicio a velocidad (valores provisionales).
+- [ ] 21. Proveedores genéricos por `kind`, con Madrid movido al pack.
+- [ ] 22. Casar los sensores al generar el bundle, no en servicio.
+- [ ] 23. Combinar varias fuentes: hoy hay un único poller y cada lectura sustituye a la anterior.
+- [ ] 24. Perfil histórico: mediciones, velocidad por hora y día, calendario de festivos, y decaimiento hacia el histórico en vez de a velocidad libre. Como mete datos de Madrid (CC BY) en el bundle junto al grafo de OSM (ODbL), hay que declarar en el manifiesto qué lleva cada licencia. El código sigue siendo AGPL; hoy no hay mezcla, porque el tráfico en vivo no va en el bundle.
+- [ ] 25. `traffic=none|historical|live` y `depart_at`, con la parte histórica en `traffic.coverage`.
+- [ ] 26. Incidencias: parser DATEX II y cierre real de vías (hoy lo más lento es un 5 % de la velocidad). La fuente de la DGT queda desactivada por defecto hasta cerrar el punto 28.
+- [ ] 27. **[gestión]** Leer las condiciones de uso de Madrid y la ficha del conjunto de histórico antes de publicar el pack.
+- [ ] 28. **[gestión]** Escribir a la DGT para aclarar su licencia. Es una precaución, no un permiso previo: no bloquea el punto 26 y solo condiciona activar la fuente por defecto.
+
+### E. Funciones de la fase posterior
+
+- [ ] 29. `match` (map matching).
+- [ ] 30. Isócronas.
+- [ ] 31. `trip`.
+- [ ] 32. Perfiles de bici, a pie y camión.
+
+### F. Publicación
+
+- [ ] 33. CI del módulo: `.github`, `ci/test.sh`, `deny.toml` y conformidad en cada PR.
+- [ ] 34. Publicar el módulo firmado y añadirlo a `ci/modules` del host.
+- [ ] 35. README, `AGENTS.md`, sección «Optimizaciones» y referencia de opciones del módulo.
+- [ ] 36. Actualizar PROJECT.md y el README del host con el módulo nuevo. Este plan vive en este repositorio, como lo propio del módulo.
+- [ ] 37. PR de `feature/router-module` a `dev`, y de `dev` a `main`.
+
+### Propuesta de corte de la v1
+
+**[decisión]** Bloques A, B y F, más los puntos 13–15 del pack `es`, con el tráfico de Madrid desactivado por defecto. El resto de C y D iría en versiones siguientes, y E al final.
+
+## Riesgos
+
+- **Cobertura de tráfico escasa y desigual.** Mitigación: tres capas con degradación y `traffic.coverage` explícito.
+- **Casar sensores con aristas mal** da retenciones fantasma. Mitigación: casado conservador (sentido, clase de vía, distancia máxima), con test por sensor.
+- **Licencias de las fuentes** sin confirmar (DGT, cita.lu): sin licencia clara no se empaqueta.
+- **Una fuente que cambia de formato o se da de baja** (varios conjuntos de la DGT figuran como obsoletos): el pack es versionado y una fuente caída degrada, no rompe.
+- **Memoria y tiempo de generación** de CCH con España completa: se mide en el paso 3 antes de seguir.
+- **Un fallo grave del módulo tira geko** (`DylibModule`, MODULES_PLAN.md, «Riesgos»).
+
+## Decisiones abiertas
+
+- **Alcance de la v1:** solo coche, `route`/`table`, sin tráfico (recomendado: la base medida primero).
+- **Formato de la API:** propio, o compatible con OSRM para poder sustituirlo sin tocar clientes (el host eliminó antes los modos Pelias y Photon; ahí se optó por no mantener formatos ajenos).
+- **Primer país con tráfico:** Madrid (CC BY 4.0, sensores, el dato más claro) frente a la DGT (cobertura estatal, solo incidencias, licencia por confirmar).
+- **Calendario por país:** si los festivos entran en el pack (`calendar.toml`) o se toman de una fuente genérica.

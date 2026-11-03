@@ -1,5 +1,5 @@
 //! Times the reference Dijkstra on random pairs of points of a built graph, to have a baseline for the
-//! faster algorithms (docs/ROUTER_PLAN.md of the host):
+//! faster algorithms (docs/ROUTER_PLAN.md):
 //!
 //!   cargo run --release -p geko-module-router --example bench -- <graph.bin> [queries] [threads]
 //!

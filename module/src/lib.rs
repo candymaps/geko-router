@@ -1,4 +1,4 @@
-//! The routing module (docs/ROUTER_PLAN.md of the host). It downloads the OSM extracts of the scope,
+//! The routing module (docs/ROUTER_PLAN.md). It downloads the OSM extracts of the scope,
 //! builds the road graph of cars and leaves it as its part of the bundle (`pipeline`), and answers
 //! routes, matrices and the nearest street on it (`serve`), with live traffic if it is asked for (`live`).
 
