@@ -1,0 +1,53 @@
+# Madrid: live traffic from the ~4,100 measurement points of the city (and the M-30), from the open
+# data portal of the Ayuntamiento de Madrid, dataset 202087-0-trafico-intensidad. Checked on
+# 2026-11-03: one XML of 2.2 MB, no authentication, `ETag` and `Last-Modified`, about 5 minutes
+# between updates.
+#
+# `[sources.madrid-sensors]` in geko-router.toml can change any of these fields, or disable the
+# source with `enabled = false`.
+
+kind = "sensors-xml"
+enabled = true
+license = { name = "CC BY 4.0", attribution = "Ayuntamiento de Madrid, datos abiertos (CC BY 4.0)", url = "https://creativecommons.org/licenses/by/4.0/legalcode.es" }
+catalog_url = "https://datos.madrid.es/en/dataset/202087-0-trafico-intensidad"
+url = "https://informo.madrid.es/informo/tmadrid/pm.xml"
+
+# Poll no faster than the source updates, with conditional requests (`ETag`). A reading older than
+# `ttl_secs` decays towards the historical profile of that edge.
+refresh_secs = 300
+ttl_secs = 900
+
+# One `<pm>` per measurement point under the root `<pms>`.
+[record]
+element = "pm"
+id = "idelem"
+description = "descripcion"
+x = "st_x"
+y = "st_y"
+decimal_separator = ","
+crs = "EPSG:25830"
+timestamp = "fecha_hora"
+timestamp_format = "%d/%m/%Y %H:%M:%S"
+# A point with `<error>` other than "N" is ignored.
+error = "error"
+error_ok = "N"
+
+[measures]
+intensity = "intensidad"            # vehicles per hour
+occupancy = "ocupacion"             # percentage
+load = "carga"                      # percentage
+service_level = "nivelServicio"     # 0 fluid, 1 slow, 2 queues, 3 congestion
+saturation_intensity = "intensidadSat"
+
+# Matching of each point to the edges of the graph, done once when the bundle is built.
+[matching]
+max_distance_m = 30
+road_classes = ["motorway", "trunk", "primary", "secondary", "tertiary", "unclassified", "residential"]
+
+# Fraction of the free-flow speed that each service level gives. Provisional: it is calibrated
+# against the historical dataset of the same portal before the pack is published.
+[service_level_factor]
+0 = 1.0
+1 = 0.7
+2 = 0.45
+3 = 0.25

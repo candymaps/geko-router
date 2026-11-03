@@ -1,0 +1,14 @@
+# Country pack of Spain for geko-router: what the generic router needs to know about the
+# country. Defaults are in data/, and each source in sources/.
+
+country = "ES"
+# Raise it with every change to the pack (this file, data/ or sources/): it is published as the
+# tag pack-<version>, and publishing refuses other files under a version already published.
+version = 1
+
+# Time zone of the profiles of historical traffic and of the calendar.
+timezone = "Europe/Madrid"
+
+# The CRS in which the Spanish sources publish coordinates (ETRS89 / UTM zone 30N).
+[crs]
+projected = "EPSG:25830"
