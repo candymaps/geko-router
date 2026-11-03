@@ -1,0 +1,5 @@
+# Clippy adds lints with each release: a newer toolchain would fail CI with no change in the code.
+# Raise it on purpose, fixing what the new lints report.
+[toolchain]
+channel = "1.99.0"
+components = ["clippy"]

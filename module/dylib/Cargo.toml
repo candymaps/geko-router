@@ -1,0 +1,17 @@
+[package]
+name = "geko-module-router-dylib"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+
+# The router module as a library that geko loads (`DylibModule`, docs/MODULES_PLAN.md of the host): a
+# crate of its own, so that linking it into the host never builds the `cdylib` too.
+[lib]
+name = "geko_router"
+crate-type = ["cdylib"]
+
+[dependencies]
+geko-module-router.workspace = true
+geko-module-sdk.workspace = true
+tracing-subscriber.workspace = true

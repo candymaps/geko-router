@@ -1,0 +1,3 @@
+# The host is a private repository: fetched with git, which has its credentials.
+[net]
+git-fetch-with-cli = true
