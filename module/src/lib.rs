@@ -14,6 +14,7 @@ pub mod route;
 pub mod scc;
 mod serve;
 pub mod snap;
+pub mod traffic;
 pub mod turn;
 
 use std::time::Duration;
