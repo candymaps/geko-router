@@ -12,6 +12,8 @@ license = "AGPL-3.0-only"
 # The contract, from the repository of the host (docs/MODULES_PLAN.md there), at its tag sdk-<contract>.
 geko-module-sdk = { git = "https://github.com/candymaps/geko.git", tag = "sdk-1" }
 geko-module-router = { path = "module" }
+tracing = "0.1"
+geko-fetch = { git = "https://github.com/candymaps/geko.git", tag = "sdk-1" }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [profile.release]

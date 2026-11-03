@@ -91,11 +91,22 @@ pub struct Builder {
     /// How many times each node appears in the usable ways.
     uses: HashMap<i64, u32>,
     coords: HashMap<i64, (f64, f64)>,
+    /// The extracts of a scope overlap at their borders: an object read twice counts once.
+    seen_ways: HashSet<i64>,
+    seen_relations: HashSet<i64>,
 }
 
 impl Builder {
     pub fn new(car: Car) -> Self {
-        Self { car, ways: Vec::new(), restrictions: Vec::new(), uses: HashMap::new(), coords: HashMap::new() }
+        Self {
+            car,
+            ways: Vec::new(),
+            restrictions: Vec::new(),
+            uses: HashMap::new(),
+            coords: HashMap::new(),
+            seen_ways: HashSet::new(),
+            seen_relations: HashSet::new(),
+        }
     }
 
     /// First pass: ways and relations (nodes are ignored).
@@ -103,7 +114,7 @@ impl Builder {
         match element {
             Element::Way { id, refs, tags } => {
                 let Some(way) = self.car.way(tags) else { return };
-                if refs.len() < 2 {
+                if refs.len() < 2 || !self.seen_ways.insert(*id) {
                     return;
                 }
                 for node in refs {
@@ -111,8 +122,8 @@ impl Builder {
                 }
                 self.ways.push(UsableWay { id: *id, refs: refs.clone(), speed_kmh: way.speed_kmh, direction: way.direction });
             }
-            Element::Relation { members, tags, .. } => {
-                if tag(tags, "type") != Some("restriction") {
+            Element::Relation { id, members, tags } => {
+                if tag(tags, "type") != Some("restriction") || !self.seen_relations.insert(*id) {
                     return;
                 }
                 let Some(kind) = tag(tags, "restriction").and_then(restriction_kind) else { return };
@@ -361,6 +372,13 @@ mod tests {
         // Through a way, and a value that is neither `no_*` nor `only_*`.
         assert!(with(relation("no_left_turn", MemberKind::Way)).is_empty());
         assert!(with(relation("something_else", MemberKind::Node)).is_empty());
+    }
+
+    #[test]
+    fn objects_read_twice_count_once() {
+        let once = build(&t_junction());
+        let twice = build(&[t_junction(), t_junction()].concat());
+        assert_eq!(once, twice);
     }
 
     #[test]
