@@ -17,6 +17,7 @@ use geko_module_sdk::scope::Scope;
 use geko_module_sdk::stages::StageLog;
 use geko_module_sdk::{GekoError, Result};
 
+use crate::cch::Cch;
 use crate::config::Config;
 use crate::extracts::{self, Catalog};
 use crate::graph::Builder;
@@ -25,7 +26,7 @@ use crate::turn::{self, TurnProfile};
 use crate::{graph_io, osm};
 
 /// The version of the code of the graph stage: raising it repeats the stage.
-const GRAPH_CODE: &str = "2";
+const GRAPH_CODE: &str = "3";
 
 /// The road classes a car drives on, until the country packs bring their own.
 const ROAD_CLASSES: &str = include_str!("../data/road-classes.toml");
@@ -34,6 +35,9 @@ const ROAD_CLASSES: &str = include_str!("../data/road-classes.toml");
 pub const GRAPH_PART: &str = "router/graph";
 
 pub const GRAPH_FILE: &str = "graph.bin";
+
+/// The order and topology of the hierarchy of queries, beside the graph it is made from.
+pub const HIERARCHY_FILE: &str = "cch.bin";
 
 pub struct Setup {
     pub config: Config,
@@ -204,7 +208,8 @@ fn fetched(setup: &Setup, dl: &dyn Downloader) -> Result<Fetched> {
     Ok(f)
 }
 
-/// The graph of the extracts, written to `path`; its nodes, edges and the arcs (turns) between them.
+/// The graph of the extracts, written to `path` with the topology of its hierarchy beside it; its
+/// nodes, edges and the arcs (turns) between them.
 fn build_graph(extracts: &[PathBuf], path: &Path) -> Result<(usize, usize, usize)> {
     let mut builder = Builder::new(Car::from_road_classes(ROAD_CLASSES)?);
     for extract in extracts {
@@ -216,6 +221,7 @@ fn build_graph(extracts: &[PathBuf], path: &Path) -> Result<(usize, usize, usize
     let graph = builder.finish();
     graph_io::write(&graph, path)?;
     let turns = turn::build(&graph, &TurnProfile::default());
+    Cch::topology(&turns).write(&turns, &path.with_file_name(HIERARCHY_FILE))?;
     Ok((graph.nodes.len(), graph.edges.len(), turns.arcs.len()))
 }
 

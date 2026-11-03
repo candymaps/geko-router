@@ -16,6 +16,11 @@
 
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
+use std::fs::File;
+use std::io::{BufWriter, Write};
+use std::path::Path;
+
+use geko_module_sdk::{GekoError, Result};
 
 use crate::turn::TurnGraph;
 
@@ -132,8 +137,8 @@ fn minimum_degree(turns: &TurnGraph) -> (Vec<u32>, Vec<Vec<u32>>) {
 }
 
 impl Cch {
-    /// The topology of `turns`; the weights are those of `customize`.
-    pub fn new(turns: &TurnGraph) -> Self {
+    /// The order and topology of `turns`, with no weights yet: they come from `customize`.
+    pub fn topology(turns: &TurnGraph) -> Self {
         let (node, above) = minimum_degree(turns);
         let n = node.len();
         let mut rank = vec![0u32; n];
@@ -152,7 +157,12 @@ impl Cch {
         }
         first_up.push(up.len() as u32);
         let edges = up.len();
-        let mut cch = Self { rank, node, first_up, up, parent, forward: vec![INF; edges], backward: vec![INF; edges], forward_via: vec![NONE; edges], backward_via: vec![NONE; edges] };
+        Self { rank, node, first_up, up, parent, forward: vec![INF; edges], backward: vec![INF; edges], forward_via: vec![NONE; edges], backward_via: vec![NONE; edges] }
+    }
+
+    /// The topology of `turns` and the weights of its arcs.
+    pub fn new(turns: &TurnGraph) -> Self {
+        let mut cch = Self::topology(turns);
         cch.customize(turns);
         cch
     }
@@ -337,6 +347,88 @@ impl Cch {
     }
 }
 
+const MAGIC: &[u8; 8] = b"GEKOCC01";
+
+/// Identifies the structure of a turn graph (not its weights): a file of topology is for the graph
+/// it was made from, and a wrong one would make the customization index out of place.
+fn fingerprint(turns: &TurnGraph) -> u64 {
+    let mut hash = 0xcbf2_9ce4_8422_2325u64;
+    let mut mix = |value: u32| {
+        for byte in value.to_le_bytes() {
+            hash = (hash ^ byte as u64).wrapping_mul(0x0000_0100_0000_01b3);
+        }
+    };
+    mix(turns.edges() as u32);
+    turns.first_arc.iter().for_each(|v| mix(*v));
+    turns.arcs.iter().for_each(|a| mix(a.head));
+    hash
+}
+
+fn data(message: &str) -> GekoError {
+    GekoError::Data(format!("the hierarchy file {message}"))
+}
+
+impl Cch {
+    /// The order and topology without weights, to read back with `read` instead of computing them again.
+    pub fn write(&self, turns: &TurnGraph, path: &Path) -> Result<()> {
+        let mut out = BufWriter::new(File::create(path)?);
+        out.write_all(MAGIC)?;
+        out.write_all(&fingerprint(turns).to_le_bytes())?;
+        for count in [self.nodes(), self.up.len()] {
+            out.write_all(&(count as u64).to_le_bytes())?;
+        }
+        for list in [&self.node, &self.first_up, &self.up] {
+            for value in list {
+                out.write_all(&value.to_le_bytes())?;
+            }
+        }
+        out.flush()?;
+        Ok(())
+    }
+
+    /// The topology `write` left for `turns`, not yet customized. Fails if the file is not of this
+    /// graph or is damaged.
+    pub fn read(path: &Path, turns: &TurnGraph) -> Result<Self> {
+        let bytes = std::fs::read(path)?;
+        let number = |at: usize| bytes.get(at..at + 8).map(|b| u64::from_le_bytes(b.try_into().expect("8 bytes")));
+        if bytes.get(..8) != Some(MAGIC) {
+            return Err(data("is not one"));
+        }
+        let (fingerprint_in_file, n, edges) = (number(8).ok_or_else(|| data("is truncated"))?, number(16).ok_or_else(|| data("is truncated"))? as usize, number(24).ok_or_else(|| data("is truncated"))? as usize);
+        if fingerprint_in_file != fingerprint(turns) || n != turns.edges() {
+            return Err(data("is of another graph"));
+        }
+        let body = &bytes[32..];
+        if body.len() != (n + (n + 1) + edges) * 4 {
+            return Err(data("is truncated"));
+        }
+        let mut values = body.as_chunks::<4>().0.iter().map(|c| u32::from_le_bytes(*c));
+        let node: Vec<u32> = values.by_ref().take(n).collect();
+        let first_up: Vec<u32> = values.by_ref().take(n + 1).collect();
+        let up: Vec<u32> = values.collect();
+
+        let mut rank = vec![NONE; n];
+        for (r, v) in node.iter().enumerate() {
+            match rank.get_mut(*v as usize) {
+                Some(slot) if *slot == NONE => *slot = r as u32,
+                _ => return Err(data("has a repeated node")),
+            }
+        }
+        if first_up.last() != Some(&(edges as u32)) || first_up.windows(2).any(|w| w[0] > w[1]) {
+            return Err(data("has broken offsets"));
+        }
+        let mut parent = Vec::with_capacity(n);
+        for r in 0..n {
+            let heads = &up[first_up[r] as usize..first_up[r + 1] as usize];
+            if heads.iter().any(|h| *h as usize >= n || *h as usize <= r) || heads.windows(2).any(|w| w[0] >= w[1]) {
+                return Err(data("has edges that do not go up"));
+            }
+            parent.push(heads.first().copied().unwrap_or(NONE));
+        }
+        Ok(Self { rank, node, first_up, up, parent, forward: vec![INF; edges], backward: vec![INF; edges], forward_via: vec![NONE; edges], backward_via: vec![NONE; edges] })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -462,5 +554,43 @@ mod tests {
         let graph = random_graph(100, 2, &mut Random(5));
         let (a, b) = (Cch::new(&graph), Cch::new(&graph));
         assert_eq!((a.rank, a.up, a.forward, a.backward), (b.rank, b.up, b.forward, b.backward));
+    }
+
+    #[test]
+    fn a_hierarchy_read_back_answers_like_one_worked_out() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cch.bin");
+        let graph = random_graph(120, 2, &mut Random(77));
+        Cch::topology(&graph).write(&graph, &path).unwrap();
+        let mut read = Cch::read(&path, &graph).unwrap();
+        read.customize(&graph);
+        let worked_out = Cch::new(&graph);
+        assert_eq!((&read.rank, &read.node, &read.first_up, &read.up, &read.parent), (&worked_out.rank, &worked_out.node, &worked_out.first_up, &worked_out.up, &worked_out.parent));
+        assert_eq!((&read.forward, &read.backward), (&worked_out.forward, &worked_out.backward));
+        check(&graph, &read);
+    }
+
+    #[test]
+    fn a_file_of_another_graph_or_a_damaged_one_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cch.bin");
+        let graph = random_graph(80, 2, &mut Random(3));
+        let other = random_graph(80, 2, &mut Random(4));
+        Cch::topology(&graph).write(&graph, &path).unwrap();
+        assert!(Cch::read(&path, &other).is_err(), "another graph of the same size");
+        assert!(Cch::read(&path, &random_graph(60, 2, &mut Random(3))).is_err(), "another size");
+
+        let bytes = std::fs::read(&path).unwrap();
+        for broken in [b"not a hierarchy".to_vec(), bytes[..bytes.len() - 4].to_vec(), bytes[..20].to_vec(), Vec::new()] {
+            std::fs::write(&path, broken).unwrap();
+            assert!(Cch::read(&path, &graph).is_err());
+        }
+        let mut damaged = bytes.clone();
+        // The first node of the order repeated in the second place.
+        let first = damaged[32..36].to_vec();
+        damaged[36..40].copy_from_slice(&first);
+        std::fs::write(&path, damaged).unwrap();
+        assert!(Cch::read(&path, &graph).is_err());
+        assert!(Cch::read(&dir.path().join("missing.bin"), &graph).is_err());
     }
 }

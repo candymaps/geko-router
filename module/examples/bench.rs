@@ -77,11 +77,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let t = Instant::now();
-    let mut cch = Cch::new(&turns);
+    let file = std::path::Path::new(path).with_file_name("cch.bin");
+    let (mut cch, how) = match Cch::read(&file, &turns) {
+        Ok(cch) => (cch, "read from the bundle"),
+        Err(_) => (Cch::topology(&turns), "worked out"),
+    };
     let built = t.elapsed();
     let t = Instant::now();
     cch.customize(&turns);
-    println!("CCH: {} nodes, {} shortcuts, depth {}; order and topology {} ms, customization {} ms", cch.nodes(), cch.edges(), cch.depth(), built.as_millis(), t.elapsed().as_millis());
+    println!("CCH: {} nodes, {} shortcuts, depth {}; order and topology {how} in {} ms, customization {} ms", cch.nodes(), cch.edges(), cch.depth(), built.as_millis(), t.elapsed().as_millis());
     let mut scratch = Scratch::new(&cch);
     let (mut fast, mut full, mut wrong) = (Vec::new(), Vec::new(), 0usize);
     let wall = Instant::now();

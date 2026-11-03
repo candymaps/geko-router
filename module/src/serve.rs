@@ -10,7 +10,7 @@ use geko_module_sdk::module::{BundleView, Request, Response};
 
 use crate::cch::{Cch, Scratch};
 use crate::graph::Graph;
-use crate::pipeline::{GRAPH_FILE, GRAPH_PART};
+use crate::pipeline::{GRAPH_FILE, GRAPH_PART, HIERARCHY_FILE};
 use crate::route;
 use crate::scc;
 use crate::snap::{Snap, Snapper};
@@ -61,17 +61,27 @@ fn json(status: u16, value: serde_json::Value) -> Response {
 
 impl Server {
     pub fn load(&self, bundle: &BundleView) -> Result<()> {
-        let graph = graph_io::read(&bundle.root.join(GRAPH_PART).join(GRAPH_FILE))?;
-        self.install(graph, MIN_COMPONENT);
+        let dir = bundle.root.join(GRAPH_PART);
+        let graph = graph_io::read(&dir.join(GRAPH_FILE))?;
+        self.install(graph, MIN_COMPONENT, Some(&dir.join(HIERARCHY_FILE)));
         Ok(())
     }
 
     /// Prepares what a route needs from `graph` and starts answering with it; requests in flight finish
-    /// on the previous one.
-    fn install(&self, graph: Graph, min_component: u32) {
+    /// on the previous one. The topology of the hierarchy is read from `hierarchy`, or worked out again
+    /// if the file is missing or is not of this graph.
+    fn install(&self, graph: Graph, min_component: u32, hierarchy: Option<&std::path::Path>) {
         let turns = turn::build(&graph, &TurnProfile::default());
         let snapper = Snapper::new(&graph, scc::in_large_component(&turns, min_component));
-        let mut cch = Cch::new(&turns);
+        let mut cch = match hierarchy.map(|path| Cch::read(path, &turns)) {
+            Some(Ok(cch)) => cch,
+            other => {
+                if let Some(Err(e)) = other {
+                    tracing::warn!(error = %e, "working out the hierarchy again");
+                }
+                Cch::topology(&turns)
+            }
+        };
         cch.customize(&turns);
         *self.loaded.write().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(Loaded { graph, turns, snapper, cch, scratches: Mutex::new(Vec::new()) }));
     }
@@ -189,7 +199,7 @@ mod tests {
         elements.iter().for_each(|e| builder.first_pass(e));
         elements.iter().for_each(|e| builder.second_pass(e));
         let server = Server::default();
-        server.install(builder.finish(), 1);
+        server.install(builder.finish(), 1, None);
         server
     }
 
