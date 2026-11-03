@@ -2,12 +2,13 @@
 //! route needs (turns, components, the index of streets) and answers `v1/route` and `v1/status`.
 
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::Instant;
 
 use geko_module_sdk::Result;
 use geko_module_sdk::module::{BundleView, Request, Response};
 
+use crate::cch::{Cch, Scratch};
 use crate::graph::Graph;
 use crate::pipeline::{GRAPH_FILE, GRAPH_PART};
 use crate::route;
@@ -26,6 +27,18 @@ struct Loaded {
     graph: Graph,
     turns: TurnGraph,
     snapper: Snapper,
+    cch: Cch,
+    /// Query state is as large as the graph: requests take one and give it back, not make one.
+    scratches: Mutex<Vec<Scratch>>,
+}
+
+impl Loaded {
+    fn route(&self, from: &[Snap], to: &[Snap]) -> Option<route::Route> {
+        let mut scratch = self.scratches.lock().unwrap_or_else(|e| e.into_inner()).pop().unwrap_or_else(|| Scratch::new(&self.cch));
+        let found = route::route_cch(&self.graph, &self.turns, &self.cch, &mut scratch, from, to);
+        self.scratches.lock().unwrap_or_else(|e| e.into_inner()).push(scratch);
+        found
+    }
 }
 
 #[derive(Default)]
@@ -58,7 +71,9 @@ impl Server {
     fn install(&self, graph: Graph, min_component: u32) {
         let turns = turn::build(&graph, &TurnProfile::default());
         let snapper = Snapper::new(&graph, scc::in_large_component(&turns, min_component));
-        *self.loaded.write().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(Loaded { graph, turns, snapper }));
+        let mut cch = Cch::new(&turns);
+        cch.customize(&turns);
+        *self.loaded.write().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(Loaded { graph, turns, snapper, cch, scratches: Mutex::new(Vec::new()) }));
     }
 
     fn loaded(&self) -> Option<Arc<Loaded>> {
@@ -107,7 +122,7 @@ impl Server {
             let which = if snapped_from.is_empty() { "from" } else { "to" };
             return json(422, serde_json::json!({ "error": format!("no street within {snap_m} m of `{which}`") }));
         };
-        let Some(found) = route::route(&loaded.graph, &loaded.turns, &snapped_from, &snapped_to) else {
+        let Some(found) = loaded.route(&snapped_from, &snapped_to) else {
             self.no_route.fetch_add(1, Ordering::Relaxed);
             return json(404, serde_json::json!({ "error": "no route between the points" }));
         };

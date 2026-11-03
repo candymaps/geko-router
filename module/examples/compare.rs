@@ -8,10 +8,11 @@
 //! The distance says whether they choose the same roads; the duration, also whether they agree on
 //! how fast a car goes, which OSRM's `car.lua` and the speeds of the pack set differently.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use geko_module_router::graph_io;
-use geko_module_router::route::route;
+use geko_module_router::cch::{Cch, Scratch};
+use geko_module_router::route::route_cch;
 use geko_module_router::scc::{components, sizes};
 use geko_module_router::snap::Snapper;
 use geko_module_router::turn::{self, TurnProfile};
@@ -57,6 +58,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let component_sizes = sizes(&component);
     let allowed: Vec<bool> = component.iter().map(|c| component_sizes[*c as usize] >= 1000).collect();
     let snapper = Snapper::new(&graph, allowed.clone());
+    let mut cch = Cch::new(&turns);
+    cch.customize(&turns);
+    let mut scratch = Scratch::new(&cch);
+    let (mut ours_us, mut osrm_us) = (Vec::new(), Vec::new());
 
     let candidates: Vec<u32> = (0..graph.edges.len() as u32).filter(|e| allowed[*e as usize]).collect();
     let mut state = seed;
@@ -83,11 +88,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut rows: Vec<Row> = Vec::new();
     let (mut only_ours, mut only_osrm, mut neither) = (0, 0, 0);
     for pair in &pairs {
+        let started = Instant::now();
         let ours = {
             let (a, b) = (snapper.snap(&graph, pair.from[0], pair.from[1], 200.0), snapper.snap(&graph, pair.to[0], pair.to[1], 200.0));
-            route(&graph, &turns, &a, &b)
+            route_cch(&graph, &turns, &cch, &mut scratch, &a, &b)
         };
-        match (ours, osrm(base, pair)) {
+        ours_us.push(started.elapsed().as_micros() as f64);
+        let started = Instant::now();
+        let theirs = osrm(base, pair);
+        osrm_us.push(started.elapsed().as_micros() as f64);
+        match (ours, theirs) {
             (Some(ours), Some((osrm_duration, osrm_distance))) => {
                 duration.push(ours.duration_s / osrm_duration);
                 distance.push(ours.distance_m / osrm_distance);
@@ -103,6 +113,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if duration.is_empty() {
         return Ok(());
     }
+    ours_us.sort_by(|a, b| a.total_cmp(b));
+    osrm_us.sort_by(|a, b| a.total_cmp(b));
+    println!("latency, snapping and route (OSRM: HTTP, one request at a time): ours median {:.0} us p99 {:.0} us; OSRM median {:.0} us p99 {:.0} us", percentile(&ours_us, 0.5), percentile(&ours_us, 0.99), percentile(&osrm_us, 0.5), percentile(&osrm_us, 0.99));
     println!("ratio ours / OSRM:");
     summary("distance", distance.clone());
     summary("duration", duration.clone());
