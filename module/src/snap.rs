@@ -22,8 +22,7 @@ pub struct Snap {
     pub point: [f64; 2],
 }
 
-pub struct Snapper<'a> {
-    graph: &'a Graph,
+pub struct Snapper {
     cells: HashMap<(i32, i32), Vec<(u32, u32)>>,
     /// The edges that share a shape: the two directions of a street.
     by_shape: HashMap<u32, Vec<u32>>,
@@ -47,9 +46,9 @@ fn project(p: [f64; 2], a: [f64; 2], b: [f64; 2]) -> (f64, f64, [f64; 2]) {
     (t, qx.hypot(qy), [a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1])])
 }
 
-impl<'a> Snapper<'a> {
+impl Snapper {
     /// `allowed[e]` says whether edge `e` may be snapped to.
-    pub fn new(graph: &'a Graph, allowed: Vec<bool>) -> Self {
+    pub fn new(graph: &Graph, allowed: Vec<bool>) -> Self {
         let mut by_shape: HashMap<u32, Vec<u32>> = HashMap::new();
         for (i, e) in graph.edges.iter().enumerate() {
             by_shape.entry(e.shape_start).or_default().push(i as u32);
@@ -67,12 +66,12 @@ impl<'a> Snapper<'a> {
                 }
             }
         }
-        Self { graph, cells, by_shape, allowed }
+        Self { cells, by_shape, allowed }
     }
 
     /// The closest street within `max_m` of the coordinate, in each direction a car can use it.
     /// Empty when there is none.
-    pub fn snap(&self, lat: f64, lon: f64, max_m: f64) -> Vec<Snap> {
+    pub fn snap(&self, graph: &Graph, lat: f64, lon: f64, max_m: f64) -> Vec<Snap> {
         let p = [lat, lon];
         let (row, col) = cell(lat, lon);
         let cell_m = CELL_DEG * M_PER_DEG_LAT.min(M_PER_DEG_LON_EQUATOR * lat.to_radians().cos());
@@ -88,7 +87,7 @@ impl<'a> Snapper<'a> {
                         if !self.by_shape[&shape].iter().any(|e| self.allowed[*e as usize]) {
                             continue;
                         }
-                        let points = &self.graph.shapes[shape as usize..];
+                        let points = &graph.shapes[shape as usize..];
                         let (t, distance, point) = project(p, points[i as usize], points[i as usize + 1]);
                         if best.is_none_or(|b| distance < b.0) {
                             best = Some((distance, shape, i, t, point));
@@ -103,7 +102,7 @@ impl<'a> Snapper<'a> {
         }
         let Some((distance_m, shape, segment, t, point)) = best.filter(|b| b.0 <= max_m) else { return Vec::new() };
         let edges = &self.by_shape[&shape];
-        let points = &self.graph.shapes[shape as usize..shape as usize + self.graph.edges[edges[0] as usize].shape_len as usize];
+        let points = &graph.shapes[shape as usize..shape as usize + graph.edges[edges[0] as usize].shape_len as usize];
         let length = |a: [f64; 2], b: [f64; 2]| haversine_m((a[0], a[1]), (b[0], b[1]));
         let before: f64 = points[..=segment as usize].windows(2).map(|w| length(w[0], w[1])).sum();
         let total: f64 = points.windows(2).map(|w| length(w[0], w[1])).sum();
@@ -111,7 +110,7 @@ impl<'a> Snapper<'a> {
         edges
             .iter()
             .filter(|e| self.allowed[**e as usize])
-            .map(|&edge| Snap { edge, fraction: if self.graph.edges[edge as usize].reversed { 1.0 - along } else { along }, distance_m, point })
+            .map(|&edge| Snap { edge, fraction: if graph.edges[edge as usize].reversed { 1.0 - along } else { along }, distance_m, point })
             .collect()
     }
 }
@@ -158,7 +157,7 @@ mod tests {
         let g = street(&[]);
         let snapper = Snapper::new(&g, all(&g));
         // Next to node 1, 10 m south of the street.
-        let snaps = snapper.snap(-0.00009, 0.0, 200.0);
+        let snaps = snapper.snap(&g, -0.00009, 0.0, 200.0);
         assert_eq!(snaps.len(), 2);
         let forward = snaps.iter().find(|s| !g.edges[s.edge as usize].reversed).unwrap();
         let backward = snaps.iter().find(|s| g.edges[s.edge as usize].reversed).unwrap();
@@ -170,7 +169,7 @@ mod tests {
     #[test]
     fn a_one_way_street_gives_its_one_edge() {
         let g = street(&[("oneway", "yes")]);
-        let snaps = Snapper::new(&g, all(&g)).snap(0.0005, 0.0005, 200.0);
+        let snaps = Snapper::new(&g, all(&g)).snap(&g, 0.0005, 0.0005, 200.0);
         assert_eq!(snaps.len(), 1);
         assert!(snaps[0].fraction > 0.0 && snaps[0].fraction < 0.5, "{}", snaps[0].fraction);
     }
@@ -179,7 +178,7 @@ mod tests {
     fn the_fraction_follows_the_bend() {
         let g = street(&[("oneway", "yes")]);
         // Right at the bend, node 2: halfway along the street, since both halves are as long.
-        let snaps = Snapper::new(&g, all(&g)).snap(0.001, 0.001, 50.0);
+        let snaps = Snapper::new(&g, all(&g)).snap(&g, 0.001, 0.001, 50.0);
         assert!((snaps[0].fraction - 0.5).abs() < 0.01, "{}", snaps[0].fraction);
         assert!(snaps[0].distance_m < 0.5);
     }
@@ -188,8 +187,8 @@ mod tests {
     fn nothing_beyond_the_limit() {
         let g = street(&[]);
         let snapper = Snapper::new(&g, all(&g));
-        assert!(snapper.snap(0.05, 0.001, 500.0).is_empty());
-        assert!(!snapper.snap(0.05, 0.001, 6000.0).is_empty());
+        assert!(snapper.snap(&g, 0.05, 0.001, 500.0).is_empty());
+        assert!(!snapper.snap(&g, 0.05, 0.001, 6000.0).is_empty());
     }
 
     #[test]
@@ -204,12 +203,12 @@ mod tests {
         ]);
         let near_11 = (0.0003, 0.0005);
         let mut allowed = all(&g);
-        let nearest = Snapper::new(&g, allowed.clone()).snap(near_11.0, near_11.1, 500.0);
+        let nearest = Snapper::new(&g, allowed.clone()).snap(&g, near_11.0, near_11.1, 500.0);
         assert_eq!(g.edges[nearest[0].edge as usize].way, 11);
         for (i, e) in g.edges.iter().enumerate() {
             allowed[i] = e.way != 11;
         }
-        let snapped = Snapper::new(&g, allowed).snap(near_11.0, near_11.1, 500.0);
+        let snapped = Snapper::new(&g, allowed).snap(&g, near_11.0, near_11.1, 500.0);
         assert!(snapped.iter().all(|s| g.edges[s.edge as usize].way == 10));
         assert!(!snapped.is_empty());
     }

@@ -11,13 +11,14 @@ mod pipeline;
 pub mod profile;
 pub mod route;
 pub mod scc;
+mod serve;
 pub mod snap;
 pub mod turn;
 
 use std::time::Duration;
 
 use geko_module_sdk::Result;
-use geko_module_sdk::module::{self, Built, Context, Description, Method, Module, ModuleName, Request, Response, Route};
+use geko_module_sdk::module::{self, Built, BundleView, Context, Description, Method, Module, ModuleName, Request, Response, Route};
 
 use crate::pipeline::Setup;
 
@@ -25,11 +26,12 @@ pub const NAME: &str = "router";
 
 pub fn open(context: Context) -> Result<Box<dyn Module>> {
     let config = config::Config::parse(&context.config, &context.config_file)?;
-    Ok(Box::new(RouterModule { setup: Setup { config, scope: context.scope, data_dir: context.data_dir, data: context.data } }))
+    Ok(Box::new(RouterModule { setup: Setup { config, scope: context.scope, data_dir: context.data_dir, data: context.data }, server: serve::Server::default() }))
 }
 
 pub struct RouterModule {
     setup: Setup,
+    server: serve::Server,
 }
 
 impl Module for RouterModule {
@@ -38,7 +40,10 @@ impl Module for RouterModule {
             name: ModuleName::new(NAME).expect("a valid name"),
             version: geko_module_sdk::module_version!().to_owned(),
             contract: module::CONTRACT,
-            routes: vec![Route { method: Method::Get, path: "v1/status".into(), pool: false, public: false }],
+            routes: vec![
+                Route { method: Method::Get, path: "v1/status".into(), pool: false, public: false },
+                Route { method: Method::Get, path: "v1/route".into(), pool: true, public: false },
+            ],
             openapi: None,
             attribution: Some(serde_json::json!({
                 "derived_database": {
@@ -70,10 +75,15 @@ impl Module for RouterModule {
         pipeline::next_build(&self.setup)
     }
 
+    fn load(&self, bundle: &BundleView) -> Result<()> {
+        self.server.load(bundle)
+    }
+
     fn handle(&self, request: Request) -> Response {
-        match request.route.as_str() {
-            "v1/status" => Response::error(503, "the router has no graph yet").with_header("Retry-After", "60"),
-            route => Response::error(404, &format!("no route {route}")),
-        }
+        self.server.handle(&request)
+    }
+
+    fn metrics(&self, out: &mut String) {
+        self.server.metrics(out);
     }
 }

@@ -218,7 +218,7 @@ mod tests {
 
     fn route_between(graph: &Graph, turns: &TurnGraph, from: (f64, f64), to: (f64, f64)) -> Option<Route> {
         let snapper = Snapper::new(graph, vec![true; graph.edges.len()]);
-        route(graph, turns, &snapper.snap(from.0, from.1, 100.0), &snapper.snap(to.0, to.1, 100.0))
+        route(graph, turns, &snapper.snap(graph, from.0, from.1, 100.0), &snapper.snap(graph, to.0, to.1, 100.0))
     }
 
     #[test]
@@ -272,8 +272,8 @@ mod tests {
     fn no_route_when_there_is_none() {
         let (g, t) = network(&[node(1, 0.0, 0.0), node(2, 0.0, 0.001), node(3, 0.01, 0.0), node(4, 0.01, 0.001), way(10, &[1, 2], &[]), way(11, &[3, 4], &[])]);
         let snapper = Snapper::new(&g, vec![true; g.edges.len()]);
-        let from = snapper.snap(0.0, 0.0005, 100.0);
-        let to = snapper.snap(0.01, 0.0005, 100.0);
+        let from = snapper.snap(&g, 0.0, 0.0005, 100.0);
+        let to = snapper.snap(&g, 0.01, 0.0005, 100.0);
         assert!(!from.is_empty() && !to.is_empty());
         assert_eq!(route(&g, &t, &from, &to), None);
     }
