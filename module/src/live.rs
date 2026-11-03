@@ -31,7 +31,8 @@ pub fn wanted(config: &TrafficConfig, scope: &Scope, offline: bool) -> Vec<Sourc
 }
 
 fn covers_madrid(scope: &Scope) -> bool {
-    scope.partitions().iter().any(|p| p.country.to_string() == "ES" && p.region.as_ref().is_none_or(|r| r.to_string() == "ES-MD"))
+    // The community and the province are the same land, under two codes (countries.toml).
+    scope.partitions().iter().any(|p| p.country.to_string() == "ES" && p.region.as_ref().is_none_or(|r| matches!(r.to_string().as_str(), "ES-MD" | "ES-M")))
 }
 
 /// Gets the text of the feed of a source.
@@ -58,7 +59,7 @@ pub fn start(loaded: Arc<Loaded>, interval: Duration, max_age: Duration, mut fet
     let stop = Arc::new(AtomicBool::new(false));
     let flag = Arc::clone(&stop);
     let spawned = std::thread::Builder::new().name("geko-router-traffic".into()).spawn(move || {
-        let mut matched = None;
+        let mut matcher = madrid::Matcher::default();
         let mut speeds: Vec<(u32, u16)> = Vec::new();
         let mut last_ok: Option<Instant> = None;
         let mut applied: Vec<(u32, u16)> = Vec::new();
@@ -69,25 +70,26 @@ pub fn start(loaded: Arc<Loaded>, interval: Duration, max_age: Duration, mut fet
                     if readings.is_empty() {
                         tracing::warn!("the traffic feed has no usable sensors");
                     } else {
-                        let by_sensor = matched.get_or_insert_with(|| {
-                            let (by_sensor, stats) = madrid::match_sensors(loaded.graph(), loaded.snapper(), &readings);
+                        if let Some(stats) = matcher.add(loaded.graph(), loaded.snapper(), &readings) {
                             tracing::info!(sensors = readings.len(), matched = stats.matched, no_direction = stats.no_direction, no_street = stats.no_street, wrong_direction = stats.wrong_direction, "sensors matched to streets");
-                            by_sensor
-                        });
-                        speeds = madrid::speeds(by_sensor, &readings);
+                        }
+                        speeds = matcher.speeds(&readings);
                         last_ok = Some(Instant::now());
                     }
                 }
                 Err(e) => tracing::warn!(error = %e, "cannot read the traffic feed"),
             }
             let fresh = last_ok.is_some_and(|t| t.elapsed() <= max_age);
-            let slow: Vec<(u32, u16)> = if fresh { speeds.iter().copied().filter(|(_, s)| *s < FREE_FLOW).collect() } else { Vec::new() };
-            if slow != applied {
+            // Every edge measured, the clear ones too: they are what `traffic.coverage` says is known.
+            let current: &[(u32, u16)] = if fresh { &speeds } else { &[] };
+            if current != applied.as_slice() {
                 let mut traffic = Traffic::free(loaded.edges());
-                slow.iter().for_each(|(edge, speed)| traffic.set(*edge, *speed));
+                current.iter().for_each(|(edge, speed)| traffic.set(*edge, *speed));
                 loaded.apply(&traffic, last_ok.unwrap_or_else(Instant::now));
-                tracing::info!(slowed_edges = slow.len(), "traffic applied");
-                applied = slow;
+                tracing::info!(measured_edges = current.len(), slowed_edges = current.iter().filter(|(_, s)| *s < FREE_FLOW).count(), "traffic applied");
+                applied = current.to_vec();
+            } else if let Some(read) = last_ok {
+                loaded.touch(read);
             }
             let wake = Instant::now() + interval;
             while Instant::now() < wake && !flag.load(Ordering::Relaxed) {
@@ -123,6 +125,7 @@ mod tests {
         assert!(wanted(&traffic(""), &scope("ES", &[]), false).is_empty(), "off by default");
         assert_eq!(wanted(&on, &scope("ES", &[]), false), vec![Source::Madrid]);
         assert_eq!(wanted(&on, &scope("ES", &["ES-MD"]), false), vec![Source::Madrid]);
+        assert_eq!(wanted(&on, &scope("ES", &["ES-M"]), false), vec![Source::Madrid], "the province, the same land");
         assert!(wanted(&on, &scope("ES", &["ES-IB"]), false).is_empty(), "Madrid is not in the scope");
         assert!(wanted(&on, &scope("LU", &[]), false).is_empty(), "no source in Luxembourg");
         assert!(wanted(&on, &scope("ES", &[]), true).is_empty(), "offline");

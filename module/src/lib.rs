@@ -1,6 +1,6 @@
 //! The routing module (docs/ROUTER_PLAN.md of the host). It downloads the OSM extracts of the scope,
-//! builds the road graph of cars and leaves it as its part of the bundle (`pipeline`). Serving routes
-//! on it is the next step: until then it answers 503.
+//! builds the road graph of cars and leaves it as its part of the bundle (`pipeline`), and answers
+//! routes, matrices and the nearest street on it (`serve`), with live traffic if it is asked for (`live`).
 
 mod config;
 pub mod live;
@@ -51,6 +51,8 @@ impl Module for RouterModule {
             routes: vec![
                 Route { method: Method::Get, path: "v1/status".into(), pool: false, public: false },
                 Route { method: Method::Get, path: "v1/route".into(), pool: true, public: false },
+                Route { method: Method::Get, path: "v1/nearest".into(), pool: true, public: false },
+                Route { method: Method::Get, path: "v1/table".into(), pool: true, public: false },
             ],
             openapi: None,
             attribution: Some(self.attribution()),

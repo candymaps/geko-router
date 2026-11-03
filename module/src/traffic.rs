@@ -17,12 +17,15 @@ pub const SLOWEST: u16 = 50;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Traffic {
     speed: Vec<u16>,
+    /// The edges a source says something of, free ones included: a road known to be clear is not
+    /// a road nothing is known of.
+    measured: Vec<bool>,
 }
 
 impl Traffic {
     /// No traffic: every one of `edges` at free flow.
     pub fn free(edges: usize) -> Self {
-        Self { speed: vec![FREE_FLOW; edges] }
+        Self { speed: vec![FREE_FLOW; edges], measured: vec![false; edges] }
     }
 
     pub fn edges(&self) -> usize {
@@ -38,6 +41,12 @@ impl Traffic {
     /// down, and what a free road can do is what the profile of its class already says.
     pub fn set(&mut self, edge: u32, thousandths: u16) {
         self.speed[edge as usize] = thousandths.clamp(SLOWEST, FREE_FLOW);
+        self.measured[edge as usize] = true;
+    }
+
+    /// For each edge, whether a source said anything of it.
+    pub fn measured(&self) -> &[bool] {
+        &self.measured
     }
 
     pub fn is_free(&self) -> bool {
@@ -169,5 +178,14 @@ mod tests {
         traffic.set(0, 0);
         traffic.set(1, 4000);
         assert_eq!((traffic.speed(0), traffic.speed(1)), (SLOWEST, FREE_FLOW));
+    }
+
+    #[test]
+    fn a_clear_road_is_measured_and_still_free() {
+        let mut traffic = Traffic::free(2);
+        assert_eq!(traffic.measured(), [false, false]);
+        traffic.set(1, FREE_FLOW);
+        assert_eq!(traffic.measured(), [false, true]);
+        assert!(traffic.is_free());
     }
 }

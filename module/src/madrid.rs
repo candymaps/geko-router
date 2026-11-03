@@ -3,11 +3,12 @@
 //! service from 0 (fluid) to 3 (congested) and in which direction it measures, in its description
 //! ("… N-S (…)": from north to south). They say no speed, so the level is turned into one.
 //!
-//! A sensor is matched to the edge of its street that goes its way, once per graph; a sensor whose
+//! A sensor is matched to the edge of its street that goes its way, once per graph, the first time
+//! the feed has it (`Matcher`: a failing sensor is left out of it until it works); a sensor whose
 //! direction cannot be read, or that is not near a street, is left out: slowing the wrong
 //! carriageway is worse than not knowing.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::graph::Graph;
 use crate::snap::Snapper;
@@ -140,6 +141,31 @@ pub fn match_sensors(graph: &Graph, snapper: &Snapper, readings: &[Reading]) -> 
     (matched, stats)
 }
 
+/// The sensors matched so far. Those failing are not in a reading, so a sensor can first appear in
+/// any of them: each is looked at the first time it is seen, and never again.
+#[derive(Debug, Default)]
+pub struct Matcher {
+    matched: HashMap<u32, u32>,
+    seen: HashSet<u32>,
+}
+
+impl Matcher {
+    /// Matches the sensors of `readings` not seen before, and says how that went if there were any.
+    pub fn add(&mut self, graph: &Graph, snapper: &Snapper, readings: &[Reading]) -> Option<MatchStats> {
+        let new: Vec<Reading> = readings.iter().filter(|r| self.seen.insert(r.id)).cloned().collect();
+        if new.is_empty() {
+            return None;
+        }
+        let (matched, stats) = match_sensors(graph, snapper, &new);
+        self.matched.extend(matched);
+        Some(stats)
+    }
+
+    pub fn speeds(&self, readings: &[Reading]) -> Vec<(u32, u16)> {
+        speeds(&self.matched, readings)
+    }
+}
+
 /// The speed of each edge that a sensor measures, from the sensors in `matched` that `readings` has:
 /// the slowest where two sensors share an edge.
 pub fn speeds(matched: &HashMap<u32, u32>, readings: &[Reading]) -> Vec<(u32, u16)> {
@@ -231,6 +257,21 @@ mod tests {
         assert_eq!((way_of(2), way_of(3)), (10, 11));
         assert!(!matched.contains_key(&1) && !matched.contains_key(&4));
         assert_eq!(stats, MatchStats { matched: 2, no_direction: 1, no_street: 1, wrong_direction: 2 });
+    }
+
+    #[test]
+    fn a_sensor_that_comes_back_is_matched_then_and_only_once() {
+        let graph = graph();
+        let snapper = Snapper::new(&graph, vec![true; graph.edges.len()]);
+        let working = reading(1, "CALLE ESTE O-E", 40.4, -3.699, 2);
+        let failing_at_first = reading(2, "CALLE NORTE S-N", 40.411, -3.7, 3);
+        let mut matcher = Matcher::default();
+        assert_eq!(matcher.add(&graph, &snapper, std::slice::from_ref(&working)).map(|s| s.matched), Some(1));
+        let both = [working, failing_at_first];
+        assert_eq!(matcher.speeds(&both).len(), 1, "not matched yet");
+        assert_eq!(matcher.add(&graph, &snapper, &both).map(|s| s.matched), Some(1), "only the new one");
+        assert_eq!(matcher.speeds(&both).len(), 2);
+        assert_eq!(matcher.add(&graph, &snapper, &both), None, "nothing new");
     }
 
     #[test]

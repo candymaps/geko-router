@@ -1,5 +1,6 @@
 //! What the router answers under `/router/`: it loads the graph of the bundle, prepares what a
-//! route needs (turns, components, the index of streets) and answers `v1/route` and `v1/status`.
+//! route needs (turns, components, the index of streets) and answers `v1/route`, `v1/table`,
+//! `v1/nearest` and `v1/status`.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
@@ -11,7 +12,7 @@ use geko_module_sdk::module::{BundleView, Request, Response};
 use crate::cch::{Cch, Scratch};
 use crate::graph::Graph;
 use crate::pipeline::{GRAPH_FILE, GRAPH_PART, HIERARCHY_FILE};
-use crate::route;
+use crate::route::{self, duration_cch};
 use crate::scc;
 use crate::snap::{Snap, Snapper};
 use crate::traffic::{FREE_FLOW, Traffic};
@@ -23,21 +24,18 @@ const MIN_COMPONENT: u32 = 1000;
 /// How far from the road a point may be and still snap to it, unless the request says otherwise.
 const DEFAULT_SNAP_M: f64 = 1000.0;
 const MAX_SNAP_M: f64 = 50_000.0;
+/// The most cells of a matrix: each is a query, and a request must not hold a thread for long.
+const MAX_TABLE_CELLS: usize = 10_000;
 
 /// What answers at a moment: the weights of the turn graph and the hierarchy customized for them.
 /// Traffic makes a new one and swaps it in, so that requests in flight finish on the one they began with.
 struct Weighted {
     turns: Arc<TurnGraph>,
     cch: Cch,
-    traffic: Option<TrafficInfo>,
-}
-
-/// What a route says of the traffic it was found with.
-#[derive(Clone, Copy)]
-pub struct TrafficInfo {
-    /// Edges slower than free flow.
-    pub slowed_edges: usize,
-    pub updated: Instant,
+    /// Edges slower than free flow, or `None` if no source says anything: no data is not no jams.
+    slowed_edges: Option<usize>,
+    /// For each edge, whether a source says anything of it; empty when none does.
+    measured: Vec<bool>,
 }
 
 pub struct Loaded {
@@ -48,13 +46,15 @@ pub struct Loaded {
     live: RwLock<Arc<Weighted>>,
     /// Query state is as large as the graph: requests take one and give it back, not make one.
     scratches: Mutex<Vec<Scratch>>,
+    /// When the sources last answered, which can be after the last change of the weights.
+    updated: Mutex<Instant>,
 }
 
 impl Loaded {
     fn new(graph: Graph, free: TurnGraph, snapper: Snapper, cch: Cch) -> Self {
         let free = Arc::new(free);
         let turns = Arc::clone(&free);
-        Self { graph, free, snapper, live: RwLock::new(Arc::new(Weighted { turns, cch, traffic: None })), scratches: Mutex::new(Vec::new()) }
+        Self { graph, free, snapper, live: RwLock::new(Arc::new(Weighted { turns, cch, slowed_edges: None, measured: Vec::new() })), scratches: Mutex::new(Vec::new()), updated: Mutex::new(Instant::now()) }
     }
 
     fn weighted(&self) -> Arc<Weighted> {
@@ -80,16 +80,35 @@ impl Loaded {
         let turns = Arc::new(self.free.with_traffic(traffic));
         let mut cch = current.cch.share_topology();
         cch.customize(&turns);
-        let slowed_edges = (0..traffic.edges() as u32).filter(|e| traffic.speed(*e) < FREE_FLOW).count();
-        let info = (slowed_edges > 0).then_some(TrafficInfo { slowed_edges, updated });
-        *self.live.write().unwrap_or_else(|e| e.into_inner()) = Arc::new(Weighted { turns, cch, traffic: info });
+        let slowed = (0..traffic.edges() as u32).filter(|e| traffic.speed(*e) < FREE_FLOW).count();
+        let measured = traffic.measured().contains(&true);
+        let weighted = Weighted { turns, cch, slowed_edges: measured.then_some(slowed), measured: if measured { traffic.measured().to_vec() } else { Vec::new() } };
+        self.touch(updated);
+        *self.live.write().unwrap_or_else(|e| e.into_inner()) = Arc::new(weighted);
+    }
+
+    /// The sources answered at `updated`, and what they said changes nothing.
+    pub fn touch(&self, updated: Instant) {
+        *self.updated.lock().unwrap_or_else(|e| e.into_inner()) = updated;
+    }
+
+    /// What a response says of traffic: `null` when no source says anything (it is off, or the data
+    /// are too old); with nothing slow, `slowed_edges` is 0.
+    fn traffic(&self, weighted: &Weighted) -> serde_json::Value {
+        let age_s = self.updated.lock().unwrap_or_else(|e| e.into_inner()).elapsed().as_secs();
+        weighted.slowed_edges.map_or(serde_json::Value::Null, |slowed_edges| serde_json::json!({ "slowed_edges": slowed_edges, "age_s": age_s }))
+    }
+
+    /// Runs `query` with the state of a query of the pool.
+    fn with_scratch<T>(&self, weighted: &Weighted, query: impl FnOnce(&mut Scratch) -> T) -> T {
+        let mut scratch = self.scratches.lock().unwrap_or_else(|e| e.into_inner()).pop().unwrap_or_else(|| Scratch::new(&weighted.cch));
+        let found = query(&mut scratch);
+        self.scratches.lock().unwrap_or_else(|e| e.into_inner()).push(scratch);
+        found
     }
 
     fn route(&self, weighted: &Weighted, from: &[Snap], to: &[Snap]) -> Option<route::Route> {
-        let mut scratch = self.scratches.lock().unwrap_or_else(|e| e.into_inner()).pop().unwrap_or_else(|| Scratch::new(&weighted.cch));
-        let found = route::route_cch(&self.graph, &weighted.turns, &weighted.cch, &mut scratch, from, to);
-        self.scratches.lock().unwrap_or_else(|e| e.into_inner()).push(scratch);
-        found
+        self.with_scratch(weighted, |scratch| route::route_cch(&self.graph, &weighted.turns, &weighted.cch, scratch, from, to))
     }
 }
 
@@ -107,11 +126,47 @@ fn coordinate(value: &str) -> Option<(f64, f64)> {
     ((-90.0..=90.0).contains(&lat) && (-180.0..=180.0).contains(&lon)).then_some((lat, lon))
 }
 
-
-/// What a response says of traffic: `null` when none was applied (it is off, or nothing is slow).
-fn traffic_json(info: Option<TrafficInfo>) -> serde_json::Value {
-    info.map_or(serde_json::Value::Null, |i| serde_json::json!({ "slowed_edges": i.slowed_edges, "age_s": i.updated.elapsed().as_secs() }))
+fn query<'a>(request: &'a Request, name: &str) -> Option<&'a str> {
+    request.query.iter().find(|(k, _)| k == name).map(|(_, v)| v.as_str())
 }
+
+/// How far from the road a point may be, as `snap_m` says.
+fn snap_limit(request: &Request) -> std::result::Result<f64, String> {
+    match query(request, "snap_m").map(str::parse::<f64>) {
+        None => Ok(DEFAULT_SNAP_M),
+        Some(Ok(m)) if m > 0.0 && m <= MAX_SNAP_M => Ok(m),
+        Some(_) => Err(format!("`snap_m` is a number of metres from 0 to {MAX_SNAP_M}")),
+    }
+}
+
+/// The coordinates of a parameter that can be repeated, at least one.
+fn points(request: &Request, name: &str) -> std::result::Result<Vec<(f64, f64)>, String> {
+    let values: Vec<&str> = request.query.iter().filter(|(k, _)| k == name).map(|(_, v)| v.as_str()).collect();
+    if values.is_empty() {
+        return Err(format!("`{name}` is required, as `lat,lon`, once for each point"));
+    }
+    values.into_iter().map(|v| coordinate(v).ok_or_else(|| format!("`{name}` is not a coordinate `lat,lon`: {v:?}"))).collect()
+}
+
+fn snapped_json(snaps: &[Snap]) -> Option<serde_json::Value> {
+    snaps.first().map(|s| serde_json::json!({ "lat": s.point[0], "lon": s.point[1], "distance_m": s.distance_m }))
+}
+
+/// Which share of a route, by length, a source says something of. The first and last edges count
+/// whole: on a route of any length that is noise, and it is a share, not a measurement.
+fn coverage(graph: &Graph, edges: &[u32], measured: &[bool]) -> serde_json::Value {
+    let (mut live, mut total) = (0.0_f64, 0.0_f64);
+    for edge in edges {
+        let length = graph.edges[*edge as usize].length_m as f64;
+        total += length;
+        if measured.get(*edge as usize).copied().unwrap_or(false) {
+            live += length;
+        }
+    }
+    let live = if total > 0.0 { (live / total * 1000.0).round() / 1000.0 } else { 0.0 };
+    serde_json::json!({ "live": live, "free_flow": ((1.0 - live) * 1000.0).round() / 1000.0 })
+}
+
 fn json(status: u16, value: serde_json::Value) -> Response {
     Response::new(status, "application/json", value.to_string())
 }
@@ -153,8 +208,10 @@ impl Server {
             return Response::error(503, "the router has no graph yet").with_header("Retry-After", "60");
         };
         match request.route.as_str() {
-            "v1/status" => json(200, serde_json::json!({ "nodes": loaded.graph.nodes.len(), "edges": loaded.graph.edges.len(), "turns": loaded.free.arcs.len(), "traffic": traffic_json(loaded.weighted().traffic) })),
+            "v1/status" => json(200, serde_json::json!({ "nodes": loaded.graph.nodes.len(), "edges": loaded.graph.edges.len(), "turns": loaded.free.arcs.len(), "traffic": loaded.traffic(&loaded.weighted()) })),
             "v1/route" => self.route(&loaded, request),
+            "v1/table" => self.table(&loaded, request),
+            "v1/nearest" => self.nearest(&loaded, request),
             route => Response::error(404, &format!("no route {route}")),
         }
     }
@@ -165,8 +222,7 @@ impl Server {
     }
 
     fn route(&self, loaded: &Loaded, request: &Request) -> Response {
-        let query = |name: &str| request.query.iter().find(|(k, _)| k == name).map(|(_, v)| v.as_str());
-        let point = |name: &str| match query(name) {
+        let point = |name: &str| match query(request, name) {
             None => Err(format!("`{name}` is required, as `lat,lon`")),
             Some(v) => coordinate(v).ok_or_else(|| format!("`{name}` is not a coordinate `lat,lon`: {v:?}")),
         };
@@ -174,18 +230,16 @@ impl Server {
             (Ok(from), Ok(to)) => (from, to),
             (Err(e), _) | (_, Err(e)) => return self.bad(&e),
         };
-        let snap_m = match query("snap_m").map(str::parse::<f64>) {
-            None => DEFAULT_SNAP_M,
-            Some(Ok(m)) if m > 0.0 && m <= MAX_SNAP_M => m,
-            Some(_) => return self.bad(&format!("`snap_m` is a number of metres from 0 to {MAX_SNAP_M}")),
+        let snap_m = match snap_limit(request) {
+            Ok(m) => m,
+            Err(e) => return self.bad(&e),
         };
-        let geometry = !matches!(query("geometry"), Some("false" | "0"));
+        let geometry = !matches!(query(request, "geometry"), Some("false" | "0"));
 
         let started = Instant::now();
         let snap = |(lat, lon): (f64, f64)| loaded.snapper.snap(&loaded.graph, lat, lon, snap_m);
         let (snapped_from, snapped_to) = (snap(from), snap(to));
-        let describe = |snaps: &[Snap]| snaps.first().map(|s| serde_json::json!({ "lat": s.point[0], "lon": s.point[1], "distance_m": s.distance_m }));
-        let (Some(origin), Some(destination)) = (describe(&snapped_from), describe(&snapped_to)) else {
+        let (Some(origin), Some(destination)) = (snapped_json(&snapped_from), snapped_json(&snapped_to)) else {
             self.no_route.fetch_add(1, Ordering::Relaxed);
             let which = if snapped_from.is_empty() { "from" } else { "to" };
             return json(422, serde_json::json!({ "error": format!("no street within {snap_m} m of `{which}`") }));
@@ -196,12 +250,18 @@ impl Server {
             return json(404, serde_json::json!({ "error": "no route between the points" }));
         };
         self.ok.fetch_add(1, Ordering::Relaxed);
+        // Always an object: a route says what is known of it, also when that is nothing.
+        let mut traffic = loaded.traffic(&weighted);
+        if traffic.is_null() {
+            traffic = serde_json::json!({});
+        }
+        traffic["coverage"] = coverage(&loaded.graph, &found.edges, &weighted.measured);
         let mut body = serde_json::json!({
             "duration_s": found.duration_s,
             "distance_m": found.distance_m,
             "snapped": { "from": origin, "to": destination },
             "compute_us": started.elapsed().as_micros() as u64,
-            "traffic": traffic_json(weighted.traffic),
+            "traffic": traffic,
         });
         if geometry {
             body["geometry"] = serde_json::json!({ "type": "LineString", "coordinates": found.geometry.iter().map(|p| [p[1], p[0]]).collect::<Vec<_>>() });
@@ -209,9 +269,62 @@ impl Server {
         json(200, body)
     }
 
+    /// The durations from every `from` to every `to`, in seconds: a row for each `from`, `null` where
+    /// a point has no street near or there is no route.
+    fn table(&self, loaded: &Loaded, request: &Request) -> Response {
+        let (from, to) = match (points(request, "from"), points(request, "to")) {
+            (Ok(from), Ok(to)) => (from, to),
+            (Err(e), _) | (_, Err(e)) => return self.bad(&e),
+        };
+        if from.len() * to.len() > MAX_TABLE_CELLS {
+            return self.bad(&format!("{} x {} is more than the {MAX_TABLE_CELLS} cells of a table", from.len(), to.len()));
+        }
+        let snap_m = match snap_limit(request) {
+            Ok(m) => m,
+            Err(e) => return self.bad(&e),
+        };
+        let started = Instant::now();
+        let snap = |points: &[(f64, f64)]| points.iter().map(|(lat, lon)| loaded.snapper.snap(&loaded.graph, *lat, *lon, snap_m)).collect::<Vec<_>>();
+        let (from, to) = (snap(&from), snap(&to));
+        let weighted = loaded.weighted();
+        let durations: Vec<Vec<Option<f64>>> = loaded.with_scratch(&weighted, |scratch| {
+            from.iter().map(|f| to.iter().map(|t| duration_cch(&weighted.turns, &weighted.cch, scratch, f, t)).collect()).collect()
+        });
+        self.ok.fetch_add(1, Ordering::Relaxed);
+        let snapped = |list: &[Vec<Snap>]| list.iter().map(|s| snapped_json(s)).collect::<Vec<_>>();
+        json(200, serde_json::json!({
+            "durations_s": durations,
+            "snapped": { "from": snapped(&from), "to": snapped(&to) },
+            "compute_us": started.elapsed().as_micros() as u64,
+            "traffic": loaded.traffic(&weighted),
+        }))
+    }
+
+    /// The street closest to `at`, where a route from that point would start.
+    fn nearest(&self, loaded: &Loaded, request: &Request) -> Response {
+        let (lat, lon) = match query(request, "at") {
+            None => return self.bad("`at` is required, as `lat,lon`"),
+            Some(v) => match coordinate(v) {
+                Some(point) => point,
+                None => return self.bad(&format!("`at` is not a coordinate `lat,lon`: {v:?}")),
+            },
+        };
+        let snap_m = match snap_limit(request) {
+            Ok(m) => m,
+            Err(e) => return self.bad(&e),
+        };
+        let snaps = loaded.snapper.snap(&loaded.graph, lat, lon, snap_m);
+        let Some(snapped) = snapped_json(&snaps) else {
+            self.no_route.fetch_add(1, Ordering::Relaxed);
+            return json(422, serde_json::json!({ "error": format!("no street within {snap_m} m of `at`") }));
+        };
+        self.ok.fetch_add(1, Ordering::Relaxed);
+        json(200, serde_json::json!({ "snapped": snapped, "way": loaded.graph.edges[snaps[0].edge as usize].way }))
+    }
+
     pub fn metrics(&self, out: &mut String) {
         use std::fmt::Write as _;
-        out.push_str("# HELP geko_router_requests_total Route requests by result.\n# TYPE geko_router_requests_total counter\n");
+        out.push_str("# HELP geko_router_requests_total Requests of routes, tables and nearest streets by result.\n# TYPE geko_router_requests_total counter\n");
         for (result, counter) in [("ok", &self.ok), ("no_route", &self.no_route), ("bad_request", &self.bad_request)] {
             let _ = writeln!(out, "geko_router_requests_total{{result=\"{result}\"}} {}", counter.load(Ordering::Relaxed));
         }
@@ -264,9 +377,83 @@ mod tests {
     }
 
     fn get(server: &Server, query: &[(&str, &str)]) -> (u16, serde_json::Value) {
-        let request = Request { route: "v1/route".into(), query: query.iter().map(|(k, v)| ((*k).into(), (*v).into())).collect(), ..Default::default() };
+        ask(server, "v1/route", query)
+    }
+
+    fn ask(server: &Server, route: &str, query: &[(&str, &str)]) -> (u16, serde_json::Value) {
+        let request = Request { route: route.into(), query: query.iter().map(|(k, v)| ((*k).into(), (*v).into())).collect(), ..Default::default() };
         let response = server.handle(&request);
         (response.status, serde_json::from_slice(&response.body).unwrap())
+    }
+
+    #[test]
+    fn without_a_source_a_route_says_all_of_it_is_free_flow() {
+        let server = server();
+        let (_, body) = get(&server, &[("from", "0,-0.0005"), ("to", "0.0005,0")]);
+        assert_eq!(body["traffic"], serde_json::json!({ "coverage": { "live": 0.0, "free_flow": 1.0 } }));
+        assert_eq!(ask(&server, "v1/status", &[]).1["traffic"], serde_json::Value::Null);
+    }
+
+    #[test]
+    fn a_clear_road_with_a_sensor_is_not_a_road_without_data() {
+        let server = server();
+        let loaded = server.current().unwrap();
+        let mut traffic = Traffic::free(loaded.edges());
+        (0..loaded.edges() as u32).for_each(|e| traffic.set(e, FREE_FLOW));
+        loaded.apply(&traffic, Instant::now());
+        let (_, body) = get(&server, &[("from", "0,-0.0005"), ("to", "0.0005,0")]);
+        assert_eq!(body["traffic"]["slowed_edges"], 0);
+        assert_eq!(body["traffic"]["coverage"], serde_json::json!({ "live": 1.0, "free_flow": 0.0 }));
+        // The data got too old: back to knowing nothing.
+        loaded.apply(&Traffic::free(loaded.edges()), Instant::now());
+        let (_, body) = get(&server, &[("from", "0,-0.0005"), ("to", "0.0005,0")]);
+        assert_eq!(body["traffic"], serde_json::json!({ "coverage": { "live": 0.0, "free_flow": 1.0 } }));
+    }
+
+    #[test]
+    fn only_the_measured_part_of_a_route_is_live() {
+        let graph_edges = [(100.0, true), (300.0, false)];
+        let graph = Graph { edges: graph_edges.iter().map(|(m, _)| crate::graph::Edge { from: 0, to: 0, way: 0, length_m: *m, seconds: 0.0, shape_start: 0, shape_len: 0, reversed: false }).collect(), ..Default::default() };
+        let measured: Vec<bool> = graph_edges.iter().map(|(_, m)| *m).collect();
+        assert_eq!(coverage(&graph, &[0, 1], &measured), serde_json::json!({ "live": 0.25, "free_flow": 0.75 }));
+        assert_eq!(coverage(&graph, &[0, 1], &[]), serde_json::json!({ "live": 0.0, "free_flow": 1.0 }));
+        assert_eq!(coverage(&graph, &[], &measured), serde_json::json!({ "live": 0.0, "free_flow": 1.0 }));
+    }
+
+    #[test]
+    fn a_table_says_what_the_routes_say() {
+        let server = server();
+        let (a, b, far) = ("0,-0.0005", "0.0005,0", "40,3");
+        let (status, body) = ask(&server, "v1/table", &[("from", a), ("from", far), ("to", b), ("to", a)]);
+        assert_eq!(status, 200, "{body}");
+        let (_, route) = get(&server, &[("from", a), ("to", b)]);
+        assert_eq!(body["durations_s"][0][0], route["duration_s"]);
+        assert_eq!(body["durations_s"][1], serde_json::json!([null, null]), "no street near the second row");
+        assert!(body["snapped"]["from"][0]["distance_m"].as_f64().unwrap() < 0.01);
+        assert_eq!(body["snapped"]["from"][1], serde_json::Value::Null);
+    }
+
+    #[test]
+    fn a_table_too_large_or_without_points_is_refused() {
+        let server = server();
+        assert_eq!(ask(&server, "v1/table", &[("to", "0,0")]).0, 400);
+        assert_eq!(ask(&server, "v1/table", &[("from", "0,0"), ("to", "x")]).0, 400);
+        let many: Vec<(&str, &str)> = std::iter::repeat_n(("from", "0,0"), 101).chain(std::iter::repeat_n(("to", "0,0"), 100)).collect();
+        let (status, body) = ask(&server, "v1/table", &many);
+        assert_eq!(status, 400);
+        assert!(body["error"].as_str().unwrap().contains("101 x 100"), "{body}");
+    }
+
+    #[test]
+    fn the_nearest_street() {
+        let server = server();
+        let (status, body) = ask(&server, "v1/nearest", &[("at", "0.0001,-0.0005")]);
+        assert_eq!(status, 200, "{body}");
+        assert_eq!(body["way"], 10);
+        assert!((body["snapped"]["distance_m"].as_f64().unwrap() - 11.1).abs() < 0.2, "{body}");
+        assert_eq!(ask(&server, "v1/nearest", &[]).0, 400);
+        assert_eq!(ask(&server, "v1/nearest", &[("at", "x")]).0, 400);
+        assert_eq!(ask(&server, "v1/nearest", &[("at", "40,3")]).0, 422);
     }
 
     #[test]
