@@ -9,6 +9,9 @@ pub mod graph_io;
 pub mod osm;
 mod pipeline;
 pub mod profile;
+pub mod route;
+pub mod scc;
+pub mod snap;
 pub mod turn;
 
 use std::time::Duration;
