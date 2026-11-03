@@ -50,7 +50,9 @@ impl Snapper {
     /// `allowed[e]` says whether edge `e` may be snapped to.
     pub fn new(graph: &Graph, allowed: Vec<bool>) -> Self {
         let mut by_shape: HashMap<u32, Vec<u32>> = HashMap::new();
-        for (i, e) in graph.edges.iter().enumerate() {
+        // Only what can be snapped to: a segment fills the cells of its box, and a ferry in diagonal
+        // across a sea, which no point lands on, would fill thousands.
+        for (i, e) in graph.edges.iter().enumerate().filter(|(i, _)| allowed[*i]) {
             by_shape.entry(e.shape_start).or_default().push(i as u32);
         }
         let mut cells: HashMap<(i32, i32), Vec<(u32, u32)>> = HashMap::new();
@@ -189,6 +191,15 @@ mod tests {
         let snapper = Snapper::new(&g, all(&g));
         assert!(snapper.snap(&g, 0.05, 0.001, 500.0).is_empty());
         assert!(!snapper.snap(&g, 0.05, 0.001, 6000.0).is_empty());
+    }
+
+    #[test]
+    fn what_cannot_be_snapped_to_takes_no_room_in_the_index() {
+        // A long diagonal, like a ferry: its box is thousands of cells.
+        let g = graph(&[node(1, 0.0, 0.0), node(2, 1.0, 1.0), node(3, 2.0, 2.0), node(4, 2.0, 2.001), way(10, &[1, 2], &[]), way(11, &[3, 4], &[])]);
+        let allowed: Vec<bool> = g.edges.iter().map(|e| e.way == 11).collect();
+        let snapper = Snapper::new(&g, allowed);
+        assert!(snapper.cells.len() < 10, "{} cells", snapper.cells.len());
     }
 
     #[test]
