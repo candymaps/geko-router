@@ -3,6 +3,10 @@
 use geko_module_sdk::Result;
 use geko_module_sdk::module::{Context, Module};
 
+// The library has an allocator of its own, apart from the host's: each side frees what it allocated.
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 fn open(context: Context) -> Result<Box<dyn Module>> {
     // The library has its own copy of `tracing`, which the host's subscriber does not see.
     use tracing_subscriber::prelude::*;
