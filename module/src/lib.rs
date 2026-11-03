@@ -1,6 +1,10 @@
 //! The routing module (docs/ROUTER_PLAN.md of the host). Step 1: the skeleton, which answers 503
 //! until it has a graph to route on.
 
+pub mod graph;
+pub mod osm;
+pub mod profile;
+
 use geko_module_sdk::Result;
 use geko_module_sdk::module::{self, Context, Description, Method, Module, ModuleName, Request, Response, Route};
 
