@@ -184,7 +184,7 @@ impl Server {
     /// if the file is missing or is not of this graph.
     fn install(&self, graph: Graph, min_component: u32, hierarchy: Option<&std::path::Path>) {
         let turns = turn::build(&graph, &TurnProfile::default());
-        let snapper = Snapper::new(&graph, scc::in_large_component(&turns, min_component));
+        let snapper = Snapper::new(&graph, graph.without_ferries(scc::in_large_component(&turns, min_component)));
         let mut cch = match hierarchy.map(|path| Cch::read(path, &turns)) {
             Some(Ok(cch)) => cch,
             other => {
@@ -413,7 +413,7 @@ mod tests {
     #[test]
     fn only_the_measured_part_of_a_route_is_live() {
         let graph_edges = [(100.0, true), (300.0, false)];
-        let graph = Graph { edges: graph_edges.iter().map(|(m, _)| crate::graph::Edge { from: 0, to: 0, way: 0, length_m: *m, seconds: 0.0, shape_start: 0, shape_len: 0, reversed: false }).collect(), ..Default::default() };
+        let graph = Graph { edges: graph_edges.iter().map(|(m, _)| crate::graph::Edge { from: 0, to: 0, way: 0, length_m: *m, seconds: 0.0, shape_start: 0, shape_len: 0, reversed: false, ferry: false }).collect(), ..Default::default() };
         let measured: Vec<bool> = graph_edges.iter().map(|(_, m)| *m).collect();
         assert_eq!(coverage(&graph, &[0, 1], &measured), serde_json::json!({ "live": 0.25, "free_flow": 0.75 }));
         assert_eq!(coverage(&graph, &[0, 1], &[]), serde_json::json!({ "live": 0.0, "free_flow": 1.0 }));

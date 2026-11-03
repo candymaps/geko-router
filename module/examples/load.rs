@@ -30,7 +30,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let turns = turn::build(&graph, &TurnProfile::default());
     let component = components(&turns);
     let component_sizes = sizes(&component);
-    let allowed: Vec<bool> = component.iter().map(|c| component_sizes[*c as usize] >= 1000).collect();
+    let allowed: Vec<bool> = graph.without_ferries(component.iter().map(|c| component_sizes[*c as usize] >= 1000).collect());
     let candidates: Vec<u32> = (0..graph.edges.len() as u32).filter(|e| allowed[*e as usize]).collect();
     let mut state = 0x9E37_79B9_7F4A_7C15u64;
     let mut next = move || {

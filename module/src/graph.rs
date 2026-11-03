@@ -35,6 +35,8 @@ pub struct Edge {
     pub shape_start: u32,
     pub shape_len: u32,
     pub reversed: bool,
+    /// A crossing by ferry: routes take it, but no point is ever on it.
+    pub ferry: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -64,6 +66,13 @@ pub struct Graph {
 }
 
 impl Graph {
+    /// `allowed` without the ferries: the edges a point can snap to. Someone at the shore is on the
+    /// road of the port, not on the line of a ferry out at sea.
+    pub fn without_ferries(&self, mut allowed: Vec<bool>) -> Vec<bool> {
+        allowed.iter_mut().zip(&self.edges).for_each(|(allow, edge)| *allow &= !edge.ferry);
+        allowed
+    }
+
     /// The shape of an edge, from its `from` to its `to`.
     pub fn shape(&self, edge: &Edge) -> impl Iterator<Item = [f64; 2]> + '_ {
         let points = &self.shapes[edge.shape_start as usize..(edge.shape_start + edge.shape_len) as usize];
@@ -77,6 +86,8 @@ struct UsableWay {
     refs: Vec<i64>,
     speed_kmh: f32,
     direction: Direction,
+    ferry: bool,
+    duration_s: Option<f32>,
 }
 
 struct RawRestriction {
@@ -124,7 +135,7 @@ impl Builder {
                 for node in refs {
                     *self.uses.entry(*node).or_default() += 1;
                 }
-                self.ways.push(UsableWay { id: *id, refs: refs.clone(), speed_kmh: way.speed_kmh, direction: way.direction });
+                self.ways.push(UsableWay { id: *id, refs: refs.clone(), speed_kmh: way.speed_kmh, direction: way.direction, ferry: way.ferry, duration_s: way.duration_s });
             }
             Element::Relation { id, members, tags } => {
                 if tag(tags, "type") != Some("restriction") || !self.seen_relations.insert(*id) {
@@ -166,6 +177,8 @@ impl Builder {
         };
 
         for way in &self.ways {
+            // A way that says how long it lasts shares that out among its edges by length.
+            let way_m: f64 = way.refs.windows(2).filter_map(|w| Some(haversine_m(*self.coords.get(&w[0])?, *self.coords.get(&w[1])?))).sum();
             // A node outside the extract cuts the way: what is on each side stays a way of its own.
             let mut run: Vec<(i64, (f64, f64))> = Vec::new();
             let runs = way.refs.split(|r| !self.coords.contains_key(r)).filter(|part| part.len() >= 2);
@@ -183,9 +196,12 @@ impl Builder {
                     let shape_start = graph.shapes.len() as u32;
                     graph.shapes.extend(points.iter().map(|(_, (lat, lon))| [*lat, *lon]));
                     let length_m = points.windows(2).map(|w| haversine_m(w[0].1, w[1].1)).sum::<f64>() as f32;
-                    let seconds = length_m / (way.speed_kmh / 3.6);
+                    let seconds = match way.duration_s {
+                        Some(whole) if way_m > 0.0 => whole * (length_m as f64 / way_m) as f32,
+                        _ => length_m / (way.speed_kmh / 3.6),
+                    };
                     let (a, b) = (node(&mut graph, points[0].0, points[0].1), node(&mut graph, id, run[i].1));
-                    let edge = |from, to, reversed| Edge { from, to, way: way.id, length_m, seconds, shape_start, shape_len: points.len() as u32, reversed };
+                    let edge = |from, to, reversed| Edge { from, to, way: way.id, length_m, seconds, shape_start, shape_len: points.len() as u32, reversed, ferry: way.ferry };
                     if matches!(way.direction, Direction::Both | Direction::Forward) {
                         graph.edges.push(edge(a, b, false));
                     }
@@ -235,6 +251,33 @@ mod tests {
 
     fn node(id: i64, lat: f64, lon: f64) -> Element {
         Element::Node { id, lat, lon, tags: Vec::new() }
+    }
+
+    #[test]
+    fn a_ferry_lasts_what_it_says_and_no_point_lands_on_it() {
+        let road = |id, refs: &[i64]| Element::Way { id, refs: refs.to_vec(), tags: tags(&[("highway", "residential")]) };
+        let elements = [
+            node(1, 0.0, -0.01),
+            node(2, 0.0, 0.0),
+            node(3, 0.0, 0.1),
+            node(4, 0.0, 0.2),
+            node(5, 0.0, 0.21),
+            node(6, 0.01, 0.1),
+            road(10, &[1, 2]),
+            Element::Way { id: 20, refs: vec![2, 3, 4], tags: tags(&[("route", "ferry"), ("duration", "1:00")]) },
+            road(11, &[4, 5]),
+            road(12, &[3, 6]),
+        ];
+        let mut builder = Builder::new(Car::from_road_classes(CLASSES).unwrap());
+        elements.iter().for_each(|e| builder.first_pass(e));
+        elements.iter().for_each(|e| builder.second_pass(e));
+        let graph = builder.finish();
+        let ferries: Vec<&Edge> = graph.edges.iter().filter(|e| e.ferry).collect();
+        assert_eq!(ferries.len(), 4, "two halves, each way");
+        assert!(ferries.iter().all(|e| (e.seconds - 1800.0).abs() < 1.0), "{ferries:?}");
+        let allowed = graph.without_ferries(vec![true; graph.edges.len()]);
+        assert_eq!(allowed.iter().filter(|a| **a).count(), graph.edges.len() - 4);
+        assert!(graph.edges.iter().zip(&allowed).all(|(e, a)| e.ferry != *a));
     }
 
     fn signal(id: i64, lat: f64, lon: f64) -> Element {

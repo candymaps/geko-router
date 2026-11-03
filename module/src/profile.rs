@@ -1,6 +1,6 @@
 //! The car profile: which ways a car can drive on, in which direction and how fast. The speeds
 //! by road class are data of the country pack (`data/road-classes.toml`), so the profile is the same
-//! code for every country.
+//! code for every country. A ferry that takes cars is a way too, at the time it says it lasts.
 
 use std::collections::HashMap;
 
@@ -8,6 +8,11 @@ use geko_module_sdk::{GekoError, Result};
 use serde::Deserialize;
 
 use crate::osm::{Tags, tag};
+
+/// How fast a ferry goes when it does not say how long it lasts: what OSRM's `car.lua` takes, so that
+/// the two can be compared. A ferry goes faster than this, but a crossing is rarely the best choice
+/// and a route that takes one with no timetable should not look short.
+const FERRY_KMH: f32 = 5.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Direction {
@@ -20,6 +25,9 @@ pub enum Direction {
 pub struct Way {
     pub speed_kmh: f32,
     pub direction: Direction,
+    pub ferry: bool,
+    /// How long all of it lasts, when it says so: then the speed does not count.
+    pub duration_s: Option<f32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -45,13 +53,16 @@ impl Car {
 
     /// `None` when a car cannot use the way.
     pub fn way(&self, tags: &Tags) -> Option<Way> {
+        if tag(tags, "route") == Some("ferry") {
+            return allowed(tags).then(|| Way { speed_kmh: FERRY_KMH, direction: direction(tags, ""), ferry: true, duration_s: tag(tags, "duration").and_then(duration_s) });
+        }
         let highway = tag(tags, "highway")?;
         let class_speed = *self.free_flow_kmh.get(highway)?;
         if tag(tags, "area") == Some("yes") || !allowed(tags) {
             return None;
         }
         let speed_kmh = tag(tags, "maxspeed").and_then(maxspeed_kmh).unwrap_or(class_speed);
-        Some(Way { speed_kmh, direction: direction(tags, highway) })
+        Some(Way { speed_kmh, direction: direction(tags, highway), ferry: false, duration_s: None })
     }
 }
 
@@ -70,6 +81,41 @@ fn direction(tags: &Tags, highway: &str) -> Direction {
         _ if matches!(highway, "motorway" | "motorway_link") => Direction::Forward,
         _ => Direction::Both,
     }
+}
+
+/// The `duration` of a ferry, in seconds: `90` (minutes), `1:30`, `1:30:00` or `PT1H30M`.
+pub fn duration_s(value: &str) -> Option<f32> {
+    let value = value.trim();
+    let seconds = if let Some(iso) = value.strip_prefix("PT") {
+        let (mut total, mut number) = (0.0_f32, String::new());
+        for c in iso.chars() {
+            if c.is_ascii_digit() || c == '.' {
+                number.push(c);
+                continue;
+            }
+            let unit = match c {
+                'H' => 3600.0,
+                'M' => 60.0,
+                'S' => 1.0,
+                _ => return None,
+            };
+            total += number.parse::<f32>().ok()? * unit;
+            number.clear();
+        }
+        if !number.is_empty() {
+            return None;
+        }
+        total
+    } else {
+        let parts: Vec<f32> = value.split(':').map(|p| p.trim().parse().ok()).collect::<Option<_>>()?;
+        match parts[..] {
+            [minutes] => minutes * 60.0,
+            [hours, minutes] => hours * 3600.0 + minutes * 60.0,
+            [hours, minutes, seconds] => hours * 3600.0 + minutes * 60.0 + seconds,
+            _ => return None,
+        }
+    };
+    (seconds.is_finite() && seconds > 0.0).then_some(seconds)
 }
 
 /// `50`, `50 km/h` or `30 mph`; anything else (`none`, `signals`, `ES:urban`) is not a number and
@@ -96,6 +142,27 @@ mod tests {
 
     fn car() -> Car {
         Car::from_road_classes(CLASSES).unwrap()
+    }
+
+    #[test]
+    fn duration_forms() {
+        for (value, seconds) in [("90", 5400.0), ("1:30", 5400.0), (" 01:30:30 ", 5430.0), ("PT1H30M", 5400.0), ("PT45M", 2700.0), ("PT30S", 30.0)] {
+            assert_eq!(duration_s(value), Some(seconds), "{value:?}");
+        }
+        for bad in ["", "soon", "0", "0:00", "1:2:3:4", "PT", "PT5", "PT5X", "-5"] {
+            assert_eq!(duration_s(bad), None, "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn a_ferry_is_a_way_unless_cars_may_not_board() {
+        let way = car().way(&tags(&[("route", "ferry"), ("duration", "2:00")])).unwrap();
+        assert!(way.ferry);
+        assert_eq!((way.duration_s, way.direction), (Some(7200.0), Direction::Both));
+        let no_time = car().way(&tags(&[("route", "ferry"), ("oneway", "yes")])).unwrap();
+        assert_eq!((no_time.duration_s, no_time.speed_kmh, no_time.direction), (None, FERRY_KMH, Direction::Forward));
+        assert!(car().way(&tags(&[("route", "ferry"), ("motor_vehicle", "no")])).is_none());
+        assert!(!car().way(&tags(&[("highway", "primary")])).unwrap().ferry);
     }
 
     #[test]

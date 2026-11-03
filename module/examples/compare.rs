@@ -56,7 +56,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let turns = turn::build(&graph, &TurnProfile::default());
     let component = components(&turns);
     let component_sizes = sizes(&component);
-    let allowed: Vec<bool> = component.iter().map(|c| component_sizes[*c as usize] >= 1000).collect();
+    let allowed: Vec<bool> = graph.without_ferries(component.iter().map(|c| component_sizes[*c as usize] >= 1000).collect());
     let snapper = Snapper::new(&graph, allowed.clone());
     let mut cch = Cch::new(&turns);
     cch.customize(&turns);

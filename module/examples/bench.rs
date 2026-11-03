@@ -26,7 +26,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let started = Instant::now();
     let graph = graph_io::read(std::path::Path::new(path))?;
     let turns = turn::build(&graph, &TurnProfile::default());
-    let allowed = in_large_component(&turns, 1000);
+    let allowed = graph.without_ferries(in_large_component(&turns, 1000));
     println!("loaded in {} ms: {} edges, {} turns", started.elapsed().as_millis(), graph.edges.len(), turns.arcs.len());
 
     let candidates: Vec<u32> = (0..graph.edges.len() as u32).filter(|e| allowed[*e as usize]).collect();

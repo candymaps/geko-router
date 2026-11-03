@@ -27,7 +27,7 @@ use crate::turn::{self, TurnProfile};
 use crate::{graph_io, osm};
 
 /// The version of the code of the graph stage: raising it repeats the stage.
-const GRAPH_CODE: &str = "3";
+const GRAPH_CODE: &str = "4";
 
 /// The road classes a car drives on, until the country packs bring their own.
 const ROAD_CLASSES: &str = include_str!("../data/road-classes.toml");

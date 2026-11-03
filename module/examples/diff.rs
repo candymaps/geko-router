@@ -26,7 +26,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let base = args.get(1).ok_or(usage)?;
     let (from, to) = (point(args.get(2).ok_or(usage)?).ok_or(usage)?, point(args.get(3).ok_or(usage)?).ok_or(usage)?);
     let turns = turn::build(&graph, &TurnProfile::default());
-    let snapper = Snapper::new(&graph, in_large_component(&turns, 1000));
+    let snapper = Snapper::new(&graph, graph.without_ferries(in_large_component(&turns, 1000)));
     let mut cch = Cch::new(&turns);
     cch.customize(&turns);
     let mut scratch = Scratch::new(&cch);
