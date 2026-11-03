@@ -19,6 +19,7 @@ use std::collections::BinaryHeap;
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::Path;
+use std::sync::{Arc, OnceLock};
 
 use geko_module_sdk::{GekoError, Result};
 
@@ -30,14 +31,14 @@ pub const INF: u32 = u32::MAX / 2;
 
 pub struct Cch {
     /// The rank of each node of the turn graph.
-    rank: Vec<u32>,
+    rank: Arc<[u32]>,
     /// The node of each rank.
-    node: Vec<u32>,
+    node: Arc<[u32]>,
     /// `up[first_up[r]..first_up[r + 1]]`: the neighbours of rank `r` above it, ascending.
-    first_up: Vec<u32>,
-    up: Vec<u32>,
+    first_up: Arc<[u32]>,
+    up: Arc<[u32]>,
     /// The lowest neighbour above each rank, `NONE` at the roots.
-    parent: Vec<u32>,
+    parent: Arc<[u32]>,
     /// By upward edge: the weight going up and the weight coming down, and the node through which
     /// each is a shortcut (`NONE`: an arc of the graph).
     forward: Vec<u32>,
@@ -45,7 +46,7 @@ pub struct Cch {
     forward_via: Vec<u32>,
     backward_via: Vec<u32>,
     /// What customization needs of the topology, worked out the first time.
-    lower: Option<Lower>,
+    lower: Arc<OnceLock<Lower>>,
 }
 
 /// A level with less work than this is done on one thread: starting threads would cost more.
@@ -68,7 +69,7 @@ impl Lower {
     fn new(cch: &Cch) -> Self {
         let n = cch.nodes();
         let mut first = vec![0u32; n + 1];
-        for head in &cch.up {
+        for head in cch.up.iter() {
             first[*head as usize + 1] += 1;
         }
         for u in 0..n {
@@ -238,7 +239,7 @@ impl Cch {
         }
         first_up.push(up.len() as u32);
         let edges = up.len();
-        Self { rank, node, first_up, up, parent, forward: vec![INF; edges], backward: vec![INF; edges], forward_via: vec![NONE; edges], backward_via: vec![NONE; edges], lower: None }
+        Self { rank: rank.into(), node: node.into(), first_up: first_up.into(), up: up.into(), parent: parent.into(), forward: vec![INF; edges], backward: vec![INF; edges], forward_via: vec![NONE; edges], backward_via: vec![NONE; edges], lower: Arc::default() }
     }
 
     /// The topology of `turns` and the weights of its arcs.
@@ -246,6 +247,24 @@ impl Cch {
         let mut cch = Self::topology(turns);
         cch.customize(turns);
         cch
+    }
+
+    /// Another hierarchy over the same topology, which is shared and not copied, with weights of its
+    /// own: the one that answers keeps answering while this one is customized for new traffic.
+    pub fn share_topology(&self) -> Self {
+        let edges = self.up.len();
+        Self {
+            rank: Arc::clone(&self.rank),
+            node: Arc::clone(&self.node),
+            first_up: Arc::clone(&self.first_up),
+            up: Arc::clone(&self.up),
+            parent: Arc::clone(&self.parent),
+            forward: vec![INF; edges],
+            backward: vec![INF; edges],
+            forward_via: vec![NONE; edges],
+            backward_via: vec![NONE; edges],
+            lower: Arc::clone(&self.lower),
+        }
     }
 
     pub fn nodes(&self) -> usize {
@@ -303,17 +322,15 @@ impl Cch {
                 }
             }
         }
-        let lower = match self.lower.take() {
-            Some(lower) => lower,
-            None => Lower::new(self),
-        };
+        let lower_cell = Arc::clone(&self.lower);
+        let lower = lower_cell.get_or_init(|| Lower::new(self));
         // The nodes of level 0 have nothing below them: their edges are final.
         for level in 1..lower.level_start.len() - 1 {
             let nodes = &lower.by_level[lower.level_start[level] as usize..lower.level_start[level + 1] as usize];
             let cost: u64 = nodes.iter().map(|u| lower.work(self, *u)).sum();
             let chunks = if threads > 1 && cost >= PARALLEL_WORK { lower.split(self, nodes, cost, threads) } else { vec![nodes] };
             let done: Vec<Vec<[u32; 4]>> = if chunks.len() == 1 {
-                vec![self.triangles(&lower, chunks[0])]
+                vec![self.triangles(lower, chunks[0])]
             } else {
                 let this = &*self;
                 let lower = &lower;
@@ -333,7 +350,6 @@ impl Cch {
                 }
             }
         }
-        self.lower = Some(lower);
     }
 
     /// The edges of `nodes` (one after the other) with the triangles below them taken in. A node
@@ -512,7 +528,7 @@ impl Cch {
             out.write_all(&(count as u64).to_le_bytes())?;
         }
         for list in [&self.node, &self.first_up, &self.up] {
-            for value in list {
+            for value in list.iter() {
                 out.write_all(&value.to_le_bytes())?;
             }
         }
@@ -559,7 +575,7 @@ impl Cch {
             }
             parent.push(heads.first().copied().unwrap_or(NONE));
         }
-        Ok(Self { rank, node, first_up, up, parent, forward: vec![INF; edges], backward: vec![INF; edges], forward_via: vec![NONE; edges], backward_via: vec![NONE; edges], lower: None })
+        Ok(Self { rank: rank.into(), node: node.into(), first_up: first_up.into(), up: up.into(), parent: parent.into(), forward: vec![INF; edges], backward: vec![INF; edges], forward_via: vec![NONE; edges], backward_via: vec![NONE; edges], lower: Arc::default() })
     }
 }
 
@@ -739,5 +755,18 @@ mod tests {
             assert_eq!((&many.forward, &many.backward, &many.forward_via, &many.backward_via), (&one.forward, &one.backward, &one.forward_via, &one.backward_via), "{threads} threads");
         }
         check(&graph, &one);
+    }
+
+    #[test]
+    fn a_hierarchy_that_shares_the_topology_has_weights_of_its_own() {
+        let graph = random_graph(120, 2, &mut Random(31));
+        let first = Cch::new(&graph);
+        let mut second = first.share_topology();
+        assert!(std::sync::Arc::ptr_eq(&first.up, &second.up) && std::sync::Arc::ptr_eq(&first.lower, &second.lower));
+        let mut heavier = graph.clone();
+        heavier.arcs.iter_mut().for_each(|a| a.weight_ds += 40);
+        second.customize(&heavier);
+        check(&graph, &first);
+        check(&heavier, &second);
     }
 }

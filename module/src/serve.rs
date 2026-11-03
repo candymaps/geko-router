@@ -14,6 +14,7 @@ use crate::pipeline::{GRAPH_FILE, GRAPH_PART, HIERARCHY_FILE};
 use crate::route;
 use crate::scc;
 use crate::snap::{Snap, Snapper};
+use crate::traffic::{FREE_FLOW, Traffic};
 use crate::turn::{self, TurnGraph, TurnProfile};
 use crate::graph_io;
 
@@ -23,19 +24,70 @@ const MIN_COMPONENT: u32 = 1000;
 const DEFAULT_SNAP_M: f64 = 1000.0;
 const MAX_SNAP_M: f64 = 50_000.0;
 
-struct Loaded {
-    graph: Graph,
-    turns: TurnGraph,
-    snapper: Snapper,
+/// What answers at a moment: the weights of the turn graph and the hierarchy customized for them.
+/// Traffic makes a new one and swaps it in, so that requests in flight finish on the one they began with.
+struct Weighted {
+    turns: Arc<TurnGraph>,
     cch: Cch,
+    traffic: Option<TrafficInfo>,
+}
+
+/// What a route says of the traffic it was found with.
+#[derive(Clone, Copy)]
+pub struct TrafficInfo {
+    /// Edges slower than free flow.
+    pub slowed_edges: usize,
+    pub updated: Instant,
+}
+
+pub struct Loaded {
+    graph: Graph,
+    /// The turn graph at free flow: what traffic is applied to.
+    free: Arc<TurnGraph>,
+    snapper: Snapper,
+    live: RwLock<Arc<Weighted>>,
     /// Query state is as large as the graph: requests take one and give it back, not make one.
     scratches: Mutex<Vec<Scratch>>,
 }
 
 impl Loaded {
-    fn route(&self, from: &[Snap], to: &[Snap]) -> Option<route::Route> {
-        let mut scratch = self.scratches.lock().unwrap_or_else(|e| e.into_inner()).pop().unwrap_or_else(|| Scratch::new(&self.cch));
-        let found = route::route_cch(&self.graph, &self.turns, &self.cch, &mut scratch, from, to);
+    fn new(graph: Graph, free: TurnGraph, snapper: Snapper, cch: Cch) -> Self {
+        let free = Arc::new(free);
+        let turns = Arc::clone(&free);
+        Self { graph, free, snapper, live: RwLock::new(Arc::new(Weighted { turns, cch, traffic: None })), scratches: Mutex::new(Vec::new()) }
+    }
+
+    fn weighted(&self) -> Arc<Weighted> {
+        self.live.read().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    pub fn edges(&self) -> usize {
+        self.graph.edges.len()
+    }
+
+    pub fn graph(&self) -> &Graph {
+        &self.graph
+    }
+
+    pub fn snapper(&self) -> &Snapper {
+        &self.snapper
+    }
+
+    /// Answers from now on with the graph at the speeds of `traffic`; with none, at free flow again.
+    /// The hierarchy that answers is not touched while the next one is customized.
+    pub fn apply(&self, traffic: &Traffic, updated: Instant) {
+        let current = self.weighted();
+        let turns = Arc::new(self.free.with_traffic(traffic));
+        let mut cch = current.cch.share_topology();
+        cch.customize(&turns);
+        let slowed_edges = (0..traffic.edges() as u32).filter(|e| traffic.speed(*e) < FREE_FLOW).count();
+        let info = (slowed_edges > 0).then_some(TrafficInfo { slowed_edges, updated });
+        *self.live.write().unwrap_or_else(|e| e.into_inner()) = Arc::new(Weighted { turns, cch, traffic: info });
+    }
+
+    fn route(&self, weighted: &Weighted, from: &[Snap], to: &[Snap]) -> Option<route::Route> {
+        let mut scratch = self.scratches.lock().unwrap_or_else(|e| e.into_inner()).pop().unwrap_or_else(|| Scratch::new(&weighted.cch));
+        let found = route::route_cch(&self.graph, &weighted.turns, &weighted.cch, &mut scratch, from, to);
         self.scratches.lock().unwrap_or_else(|e| e.into_inner()).push(scratch);
         found
     }
@@ -55,6 +107,11 @@ fn coordinate(value: &str) -> Option<(f64, f64)> {
     ((-90.0..=90.0).contains(&lat) && (-180.0..=180.0).contains(&lon)).then_some((lat, lon))
 }
 
+
+/// What a response says of traffic: `null` when none was applied (it is off, or nothing is slow).
+fn traffic_json(info: Option<TrafficInfo>) -> serde_json::Value {
+    info.map_or(serde_json::Value::Null, |i| serde_json::json!({ "slowed_edges": i.slowed_edges, "age_s": i.updated.elapsed().as_secs() }))
+}
 fn json(status: u16, value: serde_json::Value) -> Response {
     Response::new(status, "application/json", value.to_string())
 }
@@ -83,19 +140,20 @@ impl Server {
             }
         };
         cch.customize(&turns);
-        *self.loaded.write().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(Loaded { graph, turns, snapper, cch, scratches: Mutex::new(Vec::new()) }));
+        *self.loaded.write().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(Loaded::new(graph, turns, snapper, cch)));
     }
 
-    fn loaded(&self) -> Option<Arc<Loaded>> {
+    /// What answers now, which traffic is applied to.
+    pub fn current(&self) -> Option<Arc<Loaded>> {
         self.loaded.read().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
     pub fn handle(&self, request: &Request) -> Response {
-        let Some(loaded) = self.loaded() else {
+        let Some(loaded) = self.current() else {
             return Response::error(503, "the router has no graph yet").with_header("Retry-After", "60");
         };
         match request.route.as_str() {
-            "v1/status" => json(200, serde_json::json!({ "nodes": loaded.graph.nodes.len(), "edges": loaded.graph.edges.len(), "turns": loaded.turns.arcs.len() })),
+            "v1/status" => json(200, serde_json::json!({ "nodes": loaded.graph.nodes.len(), "edges": loaded.graph.edges.len(), "turns": loaded.free.arcs.len(), "traffic": traffic_json(loaded.weighted().traffic) })),
             "v1/route" => self.route(&loaded, request),
             route => Response::error(404, &format!("no route {route}")),
         }
@@ -132,7 +190,8 @@ impl Server {
             let which = if snapped_from.is_empty() { "from" } else { "to" };
             return json(422, serde_json::json!({ "error": format!("no street within {snap_m} m of `{which}`") }));
         };
-        let Some(found) = loaded.route(&snapped_from, &snapped_to) else {
+        let weighted = loaded.weighted();
+        let Some(found) = loaded.route(&weighted, &snapped_from, &snapped_to) else {
             self.no_route.fetch_add(1, Ordering::Relaxed);
             return json(404, serde_json::json!({ "error": "no route between the points" }));
         };
@@ -142,6 +201,7 @@ impl Server {
             "distance_m": found.distance_m,
             "snapped": { "from": origin, "to": destination },
             "compute_us": started.elapsed().as_micros() as u64,
+            "traffic": traffic_json(weighted.traffic),
         });
         if geometry {
             body["geometry"] = serde_json::json!({ "type": "LineString", "coordinates": found.geometry.iter().map(|p| [p[1], p[0]]).collect::<Vec<_>>() });
