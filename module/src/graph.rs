@@ -18,6 +18,8 @@ pub struct Node {
     pub osm_id: i64,
     pub lat: f64,
     pub lon: f64,
+    /// A traffic light (`highway=traffic_signals`).
+    pub signal: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -91,6 +93,7 @@ pub struct Builder {
     /// How many times each node appears in the usable ways.
     uses: HashMap<i64, u32>,
     coords: HashMap<i64, (f64, f64)>,
+    signals: HashSet<i64>,
     /// The extracts of a scope overlap at their borders: an object read twice counts once.
     seen_ways: HashSet<i64>,
     seen_relations: HashSet<i64>,
@@ -104,6 +107,7 @@ impl Builder {
             restrictions: Vec::new(),
             uses: HashMap::new(),
             coords: HashMap::new(),
+            signals: HashSet::new(),
             seen_ways: HashSet::new(),
             seen_relations: HashSet::new(),
         }
@@ -139,10 +143,13 @@ impl Builder {
 
     /// Second pass: the nodes the ways use.
     pub fn second_pass(&mut self, element: &Element) {
-        if let Element::Node { id, lat, lon } = element
+        if let Element::Node { id, lat, lon, tags } = element
             && self.uses.contains_key(id)
         {
             self.coords.insert(*id, (*lat, *lon));
+            if tag(tags, "highway") == Some("traffic_signals") {
+                self.signals.insert(*id);
+            }
         }
     }
 
@@ -150,9 +157,10 @@ impl Builder {
         let via_nodes: HashSet<i64> = self.restrictions.iter().map(|r| r.via_node).collect();
         let mut graph = Graph::default();
         let mut index: HashMap<i64, u32> = HashMap::new();
-        let mut node = |graph: &mut Graph, osm_id: i64, (lat, lon): (f64, f64)| -> u32 {
+        let signals = &self.signals;
+        let mut node =|graph: &mut Graph, osm_id: i64, (lat, lon): (f64, f64)| -> u32 {
             *index.entry(osm_id).or_insert_with(|| {
-                graph.nodes.push(Node { osm_id, lat, lon });
+                graph.nodes.push(Node { osm_id, lat, lon, signal: signals.contains(&osm_id) });
                 (graph.nodes.len() - 1) as u32
             })
         };
@@ -226,7 +234,11 @@ mod tests {
     }
 
     fn node(id: i64, lat: f64, lon: f64) -> Element {
-        Element::Node { id, lat, lon }
+        Element::Node { id, lat, lon, tags: Vec::new() }
+    }
+
+    fn signal(id: i64, lat: f64, lon: f64) -> Element {
+        Element::Node { id, lat, lon, tags: tags(&[("highway", "traffic_signals")]) }
     }
 
     fn way(id: i64, refs: &[i64], pairs: &[(&str, &str)]) -> Element {
@@ -372,6 +384,15 @@ mod tests {
         // Through a way, and a value that is neither `no_*` nor `only_*`.
         assert!(with(relation("no_left_turn", MemberKind::Way)).is_empty());
         assert!(with(relation("something_else", MemberKind::Node)).is_empty());
+    }
+
+    #[test]
+    fn traffic_signals_mark_their_node() {
+        let mut elements = t_junction();
+        elements[2] = signal(3, 0.0, 0.002);
+        let graph = build(&elements);
+        let signals: Vec<i64> = graph.nodes.iter().filter(|n| n.signal).map(|n| n.osm_id).collect();
+        assert_eq!(signals, vec![3]);
     }
 
     #[test]

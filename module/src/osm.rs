@@ -27,7 +27,7 @@ pub struct Member {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Element {
-    Node { id: i64, lat: f64, lon: f64 },
+    Node { id: i64, lat: f64, lon: f64, tags: Tags },
     Way { id: i64, refs: Vec<i64>, tags: Tags },
     Relation { id: i64, members: Vec<Member>, tags: Tags },
 }
@@ -35,12 +35,14 @@ pub enum Element {
 /// Every object of the PBF, in file order (nodes, ways, then relations).
 pub fn read_pbf(path: &Path, mut f: impl FnMut(Element)) -> Result<()> {
     let error = |e: osmpbf::Error| GekoError::Data(format!("{}: {e}", path.display()));
-    let tags = |iter: osmpbf::TagIter| iter.map(|(k, v)| (k.to_owned(), v.to_owned())).collect::<Tags>();
+    fn tags<'a>(iter: impl Iterator<Item = (&'a str, &'a str)>) -> Tags {
+        iter.map(|(k, v)| (k.to_owned(), v.to_owned())).collect()
+    }
     let reader = osmpbf::ElementReader::from_path(path).map_err(error)?;
     reader
         .for_each(|element| match element {
-            osmpbf::Element::Node(n) => f(Element::Node { id: n.id(), lat: n.lat(), lon: n.lon() }),
-            osmpbf::Element::DenseNode(n) => f(Element::Node { id: n.id(), lat: n.lat(), lon: n.lon() }),
+            osmpbf::Element::Node(n) => f(Element::Node { id: n.id(), lat: n.lat(), lon: n.lon(), tags: tags(n.tags()) }),
+            osmpbf::Element::DenseNode(n) => f(Element::Node { id: n.id(), lat: n.lat(), lon: n.lon(), tags: tags(n.tags()) }),
             osmpbf::Element::Way(w) => f(Element::Way { id: w.id(), refs: w.refs().collect(), tags: tags(w.tags()) }),
             osmpbf::Element::Relation(r) => {
                 let members = r

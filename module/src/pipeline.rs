@@ -21,10 +21,11 @@ use crate::config::Config;
 use crate::extracts::{self, Catalog};
 use crate::graph::Builder;
 use crate::profile::Car;
+use crate::turn::{self, TurnProfile};
 use crate::{graph_io, osm};
 
 /// The version of the code of the graph stage: raising it repeats the stage.
-const GRAPH_CODE: &str = "1";
+const GRAPH_CODE: &str = "2";
 
 /// The road classes a car drives on, until the country packs bring their own.
 const ROAD_CLASSES: &str = include_str!("../data/road-classes.toml");
@@ -203,8 +204,8 @@ fn fetched(setup: &Setup, dl: &dyn Downloader) -> Result<Fetched> {
     Ok(f)
 }
 
-/// The graph of the extracts, written to `path`; its nodes and edges.
-fn build_graph(extracts: &[PathBuf], path: &Path) -> Result<(usize, usize)> {
+/// The graph of the extracts, written to `path`; its nodes, edges and the arcs (turns) between them.
+fn build_graph(extracts: &[PathBuf], path: &Path) -> Result<(usize, usize, usize)> {
     let mut builder = Builder::new(Car::from_road_classes(ROAD_CLASSES)?);
     for extract in extracts {
         osm::read_pbf(extract, |e| builder.first_pass(&e))?;
@@ -214,7 +215,8 @@ fn build_graph(extracts: &[PathBuf], path: &Path) -> Result<(usize, usize)> {
     }
     let graph = builder.finish();
     graph_io::write(&graph, path)?;
-    Ok((graph.nodes.len(), graph.edges.len()))
+    let turns = turn::build(&graph, &TurnProfile::default());
+    Ok((graph.nodes.len(), graph.edges.len(), turns.arcs.len()))
 }
 
 pub fn build(setup: &Setup, dl: &dyn Downloader, force: bool) -> Result<Built> {
@@ -228,27 +230,30 @@ pub fn build(setup: &Setup, dl: &dyn Downloader, force: bool) -> Result<Built> {
 
     let dir = setup.graph_dir();
     let key = Key::new("graph").add("code", GRAPH_CODE).add("road-classes", ROAD_CLASSES).inputs(&fetched.paths, &fetched.identities)?.finish();
-    let (nodes, edges, reused) = match incremental::up_to_date(&dir, &key).filter(|_| !force) {
-        Some(stamp) => (stamp.info["nodes"].as_u64().unwrap_or(0) as usize, stamp.info["edges"].as_u64().unwrap_or(0) as usize, true),
+    let (nodes, edges, arcs, reused) = match incremental::up_to_date(&dir, &key).filter(|_| !force) {
+        Some(stamp) => {
+            let count = |key: &str| stamp.info[key].as_u64().unwrap_or(0) as usize;
+            (count("nodes"), count("edges"), count("arcs"), true)
+        }
         None => {
             incremental::invalidate(&dir)?;
             if dir.exists() {
                 fs::remove_dir_all(&dir)?;
             }
             fs::create_dir_all(&dir)?;
-            let (nodes, edges) = build_graph(&fetched.paths, &dir.join(GRAPH_FILE))?;
-            incremental::seal(&dir, key, &[], serde_json::json!({ "nodes": nodes, "edges": edges }))?;
-            (nodes, edges, false)
+            let (nodes, edges, arcs) = build_graph(&fetched.paths, &dir.join(GRAPH_FILE))?;
+            incremental::seal(&dir, key, &[], serde_json::json!({ "nodes": nodes, "edges": edges, "arcs": arcs }))?;
+            (nodes, edges, arcs, false)
         }
     };
     log.done("graph", reused);
 
     let mut report = fetched.report;
-    writeln!(report, "graph: {nodes} nodes, {edges} edges{}", if reused { " (up to date)" } else { "" }).unwrap();
+    writeln!(report, "graph: {nodes} nodes, {edges} edges, {arcs} turns{}", if reused { " (up to date)" } else { "" }).unwrap();
     Ok(Built {
         report,
         parts: vec![BundlePart { from: dir, to: GRAPH_PART.into() }],
-        meta: serde_json::json!({ "nodes": nodes, "edges": edges }),
+        meta: serde_json::json!({ "nodes": nodes, "edges": edges, "arcs": arcs }),
         licenses: vec![osm_license()],
         stages: log.into_records(),
         report_extra: serde_json::Map::new(),

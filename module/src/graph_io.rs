@@ -9,7 +9,7 @@ use geko_module_sdk::{GekoError, Result};
 
 use crate::graph::{Edge, Graph, Node, Restriction, RestrictionKind};
 
-const MAGIC: &[u8; 8] = b"GEKORG01";
+const MAGIC: &[u8; 8] = b"GEKORG02";
 
 pub fn write(graph: &Graph, path: &Path) -> Result<()> {
     let mut out = BufWriter::new(File::create(path)?);
@@ -21,6 +21,7 @@ pub fn write(graph: &Graph, path: &Path) -> Result<()> {
         out.write_all(&n.osm_id.to_le_bytes())?;
         out.write_all(&n.lat.to_le_bytes())?;
         out.write_all(&n.lon.to_le_bytes())?;
+        out.write_all(&[n.signal as u8])?;
     }
     for e in &graph.edges {
         out.write_all(&e.from.to_le_bytes())?;
@@ -88,7 +89,7 @@ pub fn read(path: &Path) -> Result<Graph> {
     let (nodes, edges, shapes, restrictions) = (r.u64()? as usize, r.u64()? as usize, r.u64()? as usize, r.u64()? as usize);
     let mut graph = Graph::default();
     for _ in 0..nodes {
-        graph.nodes.push(Node { osm_id: r.i64()?, lat: r.f64()?, lon: r.f64()? });
+        graph.nodes.push(Node { osm_id: r.i64()?, lat: r.f64()?, lon: r.f64()?, signal: r.u8()? != 0 });
     }
     for _ in 0..edges {
         graph.edges.push(Edge {
@@ -119,7 +120,7 @@ mod tests {
 
     fn graph() -> Graph {
         Graph {
-            nodes: vec![Node { osm_id: 7, lat: 39.5, lon: 2.6 }, Node { osm_id: -3, lat: 39.6, lon: 2.7 }],
+            nodes: vec![Node { osm_id: 7, lat: 39.5, lon: 2.6, signal: true }, Node { osm_id: -3, lat: 39.6, lon: 2.7, signal: false }],
             edges: vec![Edge { from: 0, to: 1, way: 99, length_m: 12.5, seconds: 1.5, shape_start: 0, shape_len: 2, reversed: true }],
             shapes: vec![[39.5, 2.6], [39.6, 2.7]],
             restrictions: vec![Restriction { from_way: 99, via: 1, to_way: 100, kind: RestrictionKind::Mandatory }],
