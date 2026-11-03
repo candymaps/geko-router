@@ -19,6 +19,7 @@ use geko_module_sdk::{GekoError, Result};
 
 use crate::cch::Cch;
 use crate::config::Config;
+use crate::live;
 use crate::extracts::{self, Catalog};
 use crate::graph::Builder;
 use crate::profile::Car;
@@ -129,13 +130,32 @@ fn osm_license() -> LicenseNotice {
     }
 }
 
+fn madrid_license() -> LicenseNotice {
+    LicenseNotice {
+        source: "madrid-traffic".into(),
+        name: "CC BY 4.0".into(),
+        attribution: "Traffic data: Ayuntamiento de Madrid (datos abiertos)".into(),
+        url: Some("https://datos.madrid.es/portal/site/egob".into()),
+    }
+}
+
+/// The licenses of what the router reads with this configuration: OpenStreetMap, and the sources
+/// of live traffic only if they are polled.
+pub fn licenses(setup: &Setup) -> Vec<LicenseNotice> {
+    let mut list = vec![osm_license()];
+    if live::wanted(&setup.config.traffic, &setup.scope, setup.data.offline).contains(&live::Source::Madrid) {
+        list.push(madrid_license());
+    }
+    list
+}
+
 /// Downloading needs the licenses of the sources accepted (`[data] accept_licenses`).
 pub fn licenses_accepted(setup: &Setup) -> Result<()> {
     if setup.scope.is_empty() || setup.data.accept_licenses {
         return Ok(());
     }
-    let l = osm_license();
-    Err(GekoError::Config(format!("downloading requires accepting the licenses of the sources of the router: {} ({}). Set [data] accept_licenses = true", l.source, l.name)))
+    let list: Vec<String> = licenses(setup).iter().map(|l| format!("{} ({})", l.source, l.name)).collect();
+    Err(GekoError::Config(format!("downloading requires accepting the licenses of the sources of the router: {}. Set [data] accept_licenses = true", list.join(", "))))
 }
 
 fn catalog(setup: &Setup, dl: &dyn Downloader) -> Result<Catalog> {
@@ -155,8 +175,15 @@ pub fn plan(setup: &Setup, dl: &dyn Downloader) -> String {
         Ok(list) => list.iter().for_each(|(file, url)| writeln!(out, "  {file:<40} {url}").unwrap()),
         Err(e) => writeln!(out, "  cannot plan: {e}").unwrap(),
     }
-    let l = osm_license();
-    writeln!(out, "Licenses:\n  {:<14} {}: {}", l.source, l.name, l.attribution).unwrap();
+    out.push_str("Licenses:\n");
+    for l in licenses(setup) {
+        writeln!(out, "  {:<14} {}: {}", l.source, l.name, l.attribution).unwrap();
+    }
+    if live::wanted(&setup.config.traffic, &setup.scope, setup.data.offline).is_empty() {
+        out.push_str("Live traffic: off\n");
+    } else {
+        out.push_str("Live traffic: on, polled in the background by `geko serve` (`build` downloads nothing for it)\n");
+    }
     if !setup.data.accept_licenses {
         out.push_str("Downloads are blocked until [data] accept_licenses = true (review the licenses above).\n");
     }
@@ -260,7 +287,7 @@ pub fn build(setup: &Setup, dl: &dyn Downloader, force: bool) -> Result<Built> {
         report,
         parts: vec![BundlePart { from: dir, to: GRAPH_PART.into() }],
         meta: serde_json::json!({ "nodes": nodes, "edges": edges, "arcs": arcs }),
-        licenses: vec![osm_license()],
+        licenses: licenses(setup),
         stages: log.into_records(),
         report_extra: serde_json::Map::new(),
     })
