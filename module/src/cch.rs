@@ -147,6 +147,29 @@ impl Scratch {
     }
 }
 
+/// The ancestors of a node in the elimination tree, from the root down, and how far each is going up
+/// from the node (`Cch::label`).
+pub struct Label {
+    ranks: Vec<u32>,
+    distances: Vec<u32>,
+}
+
+impl Label {
+    /// The length of the shortest path from the node of `from` (a label that goes up) to the node of
+    /// `to` (one that goes down), or `INF` if there is none: the best sum over the ancestors the two
+    /// have in common, which are the first ones of both lists.
+    pub fn meet(from: &Label, to: &Label) -> u32 {
+        let mut best = INF;
+        for ((a, b), (da, db)) in from.ranks.iter().zip(&to.ranks).zip(from.distances.iter().zip(&to.distances)) {
+            if a != b {
+                break;
+            }
+            best = best.min(da + db);
+        }
+        best
+    }
+}
+
 /// The nodes in elimination order, and for each the neighbours above it when it was eliminated: the
 /// edges of the graph plus the shortcuts that the elimination adds. Always the lowest degree
 /// first, the lowest node on a tie.
@@ -470,6 +493,44 @@ impl Cch {
         (best < INF).then_some((best, meet))
     }
 
+    /// The distances from `node`, going only up, to each of its ancestors in the elimination tree, and
+    /// the ancestors themselves, from the root down. The distance between two nodes is the best sum of
+    /// theirs over the ancestors they share (`Label::meet`), so a matrix costs one of these for each
+    /// point and a short walk for each cell, instead of a search for each cell. `extra` is what
+    /// starting or ending at `node` adds; `backward` takes the weights that come down, for a target.
+    pub fn label(&self, scratch: &mut Scratch, node: u32, extra: u32, backward: bool) -> Label {
+        for v in scratch.touched.drain(..) {
+            scratch.forward[v as usize] = INF;
+            scratch.backward[v as usize] = INF;
+        }
+        let mut chain = Vec::new();
+        let mut v = self.rank[node as usize];
+        while v != NONE {
+            chain.push(v);
+            v = self.parent[v as usize];
+        }
+        let (distance, weights) = if backward { (&mut scratch.backward, &self.backward) } else { (&mut scratch.forward, &self.forward) };
+        distance[chain[0] as usize] = extra;
+        for &v in &chain {
+            let d = distance[v as usize];
+            if d >= INF {
+                continue;
+            }
+            for e in self.first_up[v as usize] as usize..self.first_up[v as usize + 1] as usize {
+                let weight = weights[e];
+                if weight < INF && d + weight < distance[self.up[e] as usize] {
+                    distance[self.up[e] as usize] = d + weight;
+                }
+            }
+        }
+        chain.reverse();
+        let distances = chain.iter().map(|v| distance[*v as usize]).collect();
+        for v in &chain {
+            distance[*v as usize] = INF;
+        }
+        Label { ranks: chain, distances }
+    }
+
     /// The nodes of the turn graph along the path the last query found, which met at `meet`, from its
     /// source to its target.
     pub fn path(&self, scratch: &Scratch, meet: u32) -> Vec<u32> {
@@ -709,6 +770,57 @@ mod tests {
                 assert_eq!(cch.query(&mut scratch, start, end).unwrap().0 + from + to, length);
             }
         }
+    }
+
+    #[test]
+    fn labels_give_every_distance_of_a_matrix() {
+        for (n, arcs, seed) in [(60, 1, 3), (150, 2, 8), (120, 3, 21)] {
+            let graph = random_graph(n, arcs, &mut Random(0x9E37_79B9_7F4A_7C15 ^ seed));
+            let cch = Cch::new(&graph);
+            let mut scratch = Scratch::new(&cch);
+            let nodes: Vec<u32> = (0..n).collect();
+            let from: Vec<Label> = nodes.iter().map(|v| cch.label(&mut scratch, *v, 5, false)).collect();
+            let to: Vec<Label> = nodes.iter().map(|v| cch.label(&mut scratch, *v, 2, true)).collect();
+            for s in &nodes {
+                let expected = dijkstra(&graph, *s);
+                for t in &nodes {
+                    let got = Label::meet(&from[*s as usize], &to[*t as usize]);
+                    if expected[*t as usize] >= INF {
+                        assert!(got >= INF, "{s} -> {t}");
+                    } else {
+                        assert_eq!(got, expected[*t as usize] + 7, "{s} -> {t}");
+                    }
+                }
+            }
+            // The scratch is clean for the next query.
+            assert_eq!(cch.query(&mut scratch, 0, 1).map(|r| r.0), (dijkstra(&graph, 0)[1] < INF).then(|| dijkstra(&graph, 0)[1]));
+        }
+    }
+
+    #[test]
+    fn labels_after_a_query_are_those_of_a_clean_scratch() {
+        let n = 150;
+        let graph = random_graph(n, 2, &mut Random(0x9E37_79B9_7F4A_7C15 ^ 8));
+        let cch = Cch::new(&graph);
+        let mut scratch = Scratch::new(&cch);
+        let clean: Vec<Label> = (0..n).map(|v| cch.label(&mut Scratch::new(&cch), v, 0, false)).collect();
+        for v in 0..n {
+            cch.query(&mut scratch, (v * 7) % n, (v * 13 + 1) % n);
+            let label = cch.label(&mut scratch, v, 0, false);
+            assert_eq!(label.distances, clean[v as usize].distances, "node {v}");
+        }
+    }
+
+    #[test]
+    fn labels_of_nodes_with_no_common_ancestor_do_not_meet() {
+        let mut graph = TurnGraph { edge_ds: vec![10; 3], ..Default::default() };
+        graph.first_arc = vec![0, 1, 1, 1];
+        graph.arcs = vec![Arc { head: 1, weight_ds: 7 }];
+        let cch = Cch::new(&graph);
+        let mut scratch = Scratch::new(&cch);
+        let from = cch.label(&mut scratch, 0, 0, false);
+        assert_eq!(Label::meet(&from, &cch.label(&mut scratch, 1, 0, true)), 7);
+        assert!(Label::meet(&from, &cch.label(&mut scratch, 2, 0, true)) >= INF);
     }
 
     #[test]

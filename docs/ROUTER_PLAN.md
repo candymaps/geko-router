@@ -237,9 +237,14 @@ Generación del router: 8,3 M de aristas, 14,6 M de giros, 408 s y 3,1 GB de pic
 
 ### B. API de la fase 1
 
-- [ ] 8. **[decisión]** Formato de la API: propio o compatible con OSRM.
+- [x] 8. **[decisión]** Formato de la API: propio, documentado en `openapi.yaml` (punto 12). Sin capa de compatibilidad con OSRM.
 - [ ] 9. Alternativas y pasos en `route`.
-- [ ] 10. `table` con un algoritmo muchos-a-muchos, hasta 1.000×1.000, y segunda medición.
+- [x] 10. `table` con un algoritmo muchos-a-muchos, hasta 1.000×1.000, y segunda medición.
+  - Algoritmo: cada punto da una etiqueta (`Cch::label`: distancias hacia arriba a todos sus ancestros en el árbol de eliminación); una celda es la mejor suma sobre los ancestros comunes (`Label::meet`). Las filas se reparten entre hilos.
+  - `GET /v1/table` (puntos repetidos `from`/`to`) y `POST /v1/table` con cuerpo `{"from":[[lat,lon],…],"to":[…],"snap_m":n}`. Límites: 1.000.000 celdas y 2.000 puntos por lado.
+  - Medición (Baleares, 1.000×1.000 aleatorios en Mallorca, un `POST`, máquina en reposo): 0,25–0,44 s de cómputo, 0,29–0,38 s totales con 6 MB de respuesta. El método anterior, una consulta por celda (≈230 µs cada una en `route`), costaría unos 230 s: ≈500–900 veces más.
+  - Exactitud: 1.875 celdas de `POST /v1/table` contra `GET /v1/route` por pares, 0 diferencias (tolerancia 0,1 s del redondeo).
+  - Fallo hallado y corregido en la validación en vivo: `label` suponía limpio el `Scratch`, pero `query_many` lo limpia al empezar la siguiente consulta; tras una ruta, la primera tabla salía errónea. Prueba `labels_after_a_query_are_those_of_a_clean_scratch`.
 - [ ] 11. Índice espacial del plan (R-tree de Hilbert), o decidir que basta la rejilla actual.
 - [ ] 12. `openapi.yaml` y demo en `/router/`.
 

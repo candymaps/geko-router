@@ -12,7 +12,7 @@ use geko_module_sdk::module::{BundleView, Request, Response};
 use crate::cch::{Cch, Scratch};
 use crate::graph::Graph;
 use crate::pipeline::{GRAPH_FILE, GRAPH_PART, HIERARCHY_FILE};
-use crate::route::{self, duration_cch};
+use crate::route::{self, durations_cch};
 use crate::scc;
 use crate::snap::{Snap, Snapper};
 use crate::traffic::{FREE_FLOW, Traffic};
@@ -24,8 +24,10 @@ const MIN_COMPONENT: u32 = 1000;
 /// How far from the road a point may be and still snap to it, unless the request says otherwise.
 const DEFAULT_SNAP_M: f64 = 1000.0;
 const MAX_SNAP_M: f64 = 50_000.0;
-/// The most cells of a matrix: each is a query, and a request must not hold a thread for long.
-const MAX_TABLE_CELLS: usize = 10_000;
+/// The most cells of a matrix, and the most points on a side of it: a request must not hold a thread
+/// for long, and the answer has a number for each cell.
+const MAX_TABLE_CELLS: usize = 1_000_000;
+const MAX_TABLE_POINTS: usize = 2_000;
 
 /// What answers at a moment: the weights of the turn graph and the hierarchy customized for them.
 /// Traffic makes a new one and swaps it in, so that requests in flight finish on the one they began with.
@@ -122,7 +124,10 @@ pub struct Server {
 
 fn coordinate(value: &str) -> Option<(f64, f64)> {
     let (lat, lon) = value.split_once(',')?;
-    let (lat, lon) = (lat.trim().parse::<f64>().ok()?, lon.trim().parse::<f64>().ok()?);
+    on_earth(lat.trim().parse::<f64>().ok()?, lon.trim().parse::<f64>().ok()?)
+}
+
+fn on_earth(lat: f64, lon: f64) -> Option<(f64, f64)> {
     ((-90.0..=90.0).contains(&lat) && (-180.0..=180.0).contains(&lon)).then_some((lat, lon))
 }
 
@@ -137,6 +142,31 @@ fn snap_limit(request: &Request) -> std::result::Result<f64, String> {
         Some(Ok(m)) if m > 0.0 && m <= MAX_SNAP_M => Ok(m),
         Some(_) => Err(format!("`snap_m` is a number of metres from 0 to {MAX_SNAP_M}")),
     }
+}
+
+type Coordinates = Vec<(f64, f64)>;
+
+/// The points of a matrix and how far from the road they may be: from the query (`from` and `to`
+/// repeated, for a few points) or from a JSON body (`{"from": [[lat, lon], ...], "to": [...]}`, for
+/// as many as a matrix allows, which would not fit in a URL).
+fn table_request(request: &Request) -> std::result::Result<(Coordinates, Coordinates, f64), String> {
+    if request.body.is_empty() {
+        return Ok((points(request, "from")?, points(request, "to")?, snap_limit(request)?));
+    }
+    let body: serde_json::Value = serde_json::from_slice(&request.body).map_err(|e| format!("the body is not JSON: {e}"))?;
+    let list = |name: &str| -> std::result::Result<Vec<(f64, f64)>, String> {
+        let items = body[name].as_array().filter(|a| !a.is_empty()).ok_or_else(|| format!("`{name}` is required, as a list of `[lat, lon]`"))?;
+        let pair = |item: &serde_json::Value| match item.as_array().map(Vec::as_slice) {
+            Some([lat, lon]) => on_earth(lat.as_f64()?, lon.as_f64()?),
+            _ => None,
+        };
+        items.iter().map(pair).collect::<Option<_>>().ok_or_else(|| format!("`{name}` has something that is not a coordinate `[lat, lon]`"))
+    };
+    let snap_m = match body.get("snap_m") {
+        None | Some(serde_json::Value::Null) => DEFAULT_SNAP_M,
+        Some(v) => v.as_f64().filter(|m| *m > 0.0 && *m <= MAX_SNAP_M).ok_or_else(|| format!("`snap_m` is a number of metres from 0 to {MAX_SNAP_M}"))?,
+    };
+    Ok((list("from")?, list("to")?, snap_m))
 }
 
 /// The coordinates of a parameter that can be repeated, at least one.
@@ -272,24 +302,21 @@ impl Server {
     /// The durations from every `from` to every `to`, in seconds: a row for each `from`, `null` where
     /// a point has no street near or there is no route.
     fn table(&self, loaded: &Loaded, request: &Request) -> Response {
-        let (from, to) = match (points(request, "from"), points(request, "to")) {
-            (Ok(from), Ok(to)) => (from, to),
-            (Err(e), _) | (_, Err(e)) => return self.bad(&e),
+        let (from, to, snap_m) = match table_request(request) {
+            Ok(parsed) => parsed,
+            Err(e) => return self.bad(&e),
         };
+        if from.len() > MAX_TABLE_POINTS || to.len() > MAX_TABLE_POINTS {
+            return self.bad(&format!("{} x {} has more than the {MAX_TABLE_POINTS} points a side of a table can have", from.len(), to.len()));
+        }
         if from.len() * to.len() > MAX_TABLE_CELLS {
             return self.bad(&format!("{} x {} is more than the {MAX_TABLE_CELLS} cells of a table", from.len(), to.len()));
         }
-        let snap_m = match snap_limit(request) {
-            Ok(m) => m,
-            Err(e) => return self.bad(&e),
-        };
         let started = Instant::now();
         let snap = |points: &[(f64, f64)]| points.iter().map(|(lat, lon)| loaded.snapper.snap(&loaded.graph, *lat, *lon, snap_m)).collect::<Vec<_>>();
         let (from, to) = (snap(&from), snap(&to));
         let weighted = loaded.weighted();
-        let durations: Vec<Vec<Option<f64>>> = loaded.with_scratch(&weighted, |scratch| {
-            from.iter().map(|f| to.iter().map(|t| duration_cch(&weighted.turns, &weighted.cch, scratch, f, t)).collect()).collect()
-        });
+        let durations = loaded.with_scratch(&weighted, |scratch| durations_cch(&weighted.turns, &weighted.cch, scratch, &from, &to));
         self.ok.fetch_add(1, Ordering::Relaxed);
         let snapped = |list: &[Vec<Snap>]| list.iter().map(|s| snapped_json(s)).collect::<Vec<_>>();
         json(200, serde_json::json!({
@@ -438,10 +465,49 @@ mod tests {
         let server = server();
         assert_eq!(ask(&server, "v1/table", &[("to", "0,0")]).0, 400);
         assert_eq!(ask(&server, "v1/table", &[("from", "0,0"), ("to", "x")]).0, 400);
-        let many: Vec<(&str, &str)> = std::iter::repeat_n(("from", "0,0"), 101).chain(std::iter::repeat_n(("to", "0,0"), 100)).collect();
+        let many: Vec<(&str, &str)> = std::iter::repeat_n(("from", "0,0"), 1001).chain(std::iter::repeat_n(("to", "0,0"), 1000)).collect();
         let (status, body) = ask(&server, "v1/table", &many);
         assert_eq!(status, 400);
-        assert!(body["error"].as_str().unwrap().contains("101 x 100"), "{body}");
+        assert!(body["error"].as_str().unwrap().contains("1001 x 1000 is more than"), "{body}");
+        let long: Vec<(&str, &str)> = std::iter::repeat_n(("from", "0,0"), 2001).chain([("to", "0,0")]).collect();
+        let (status, body) = ask(&server, "v1/table", &long);
+        assert_eq!(status, 400);
+        assert!(body["error"].as_str().unwrap().contains("2001 x 1 has more than"), "{body}");
+    }
+
+    fn post(server: &Server, route: &str, body: &str) -> (u16, serde_json::Value) {
+        let request = Request { route: route.into(), body: body.as_bytes().to_vec(), content_type: Some("application/json".into()), ..Default::default() };
+        let response = server.handle(&request);
+        (response.status, serde_json::from_slice(&response.body).unwrap())
+    }
+
+    #[test]
+    fn a_table_from_a_body_is_the_same_as_from_the_query() {
+        let server = server();
+        let (a, b, far) = ("0,-0.0005", "0.0005,0", "40,3");
+        let (_, from_query) = ask(&server, "v1/table", &[("from", a), ("from", far), ("to", b), ("to", a)]);
+        let (status, from_body) = post(&server, "v1/table", r#"{"from": [[0, -0.0005], [40, 3]], "to": [[0.0005, 0], [0, -0.0005]]}"#);
+        assert_eq!(status, 200, "{from_body}");
+        assert_eq!(from_body["durations_s"], from_query["durations_s"]);
+        assert_eq!(post(&server, "v1/table", r#"{"from": [[0, 0]], "to": [[0, 0]], "snap_m": 50}"#).0, 200);
+    }
+
+    #[test]
+    fn a_body_that_is_not_a_table_is_refused() {
+        let server = server();
+        for (body, word) in [
+            ("nonsense", "not JSON"),
+            (r#"{"to": [[0, 0]]}"#, "from"),
+            (r#"{"from": [], "to": [[0, 0]]}"#, "from"),
+            (r#"{"from": [[0, 0]], "to": [[0, "x"]]}"#, "to"),
+            (r#"{"from": [[0, 0, 1]], "to": [[0, 0]]}"#, "from"),
+            (r#"{"from": [[95, 0]], "to": [[0, 0]]}"#, "from"),
+            (r#"{"from": [[0, 0]], "to": [[0, 0]], "snap_m": -1}"#, "snap_m"),
+        ] {
+            let (status, got) = post(&server, "v1/table", body);
+            assert_eq!(status, 400, "{body}: {got}");
+            assert!(got["error"].as_str().unwrap().contains(word), "{body}: {got}");
+        }
     }
 
     #[test]

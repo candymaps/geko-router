@@ -53,6 +53,7 @@ impl Module for RouterModule {
                 Route { method: Method::Get, path: "v1/route".into(), pool: true, public: false },
                 Route { method: Method::Get, path: "v1/nearest".into(), pool: true, public: false },
                 Route { method: Method::Get, path: "v1/table".into(), pool: true, public: false },
+                Route { method: Method::Post, path: "v1/table".into(), pool: true, public: false },
             ],
             openapi: None,
             attribution: Some(self.attribution()),

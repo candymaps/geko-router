@@ -9,7 +9,7 @@
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap};
 
-use crate::cch::{Cch, Scratch};
+use crate::cch::{Cch, INF, Label, Scratch};
 use crate::graph::{Graph, haversine_m};
 use crate::snap::Snap;
 use crate::turn::TurnGraph;
@@ -190,6 +190,74 @@ pub fn route_cch(graph: &Graph, turns: &TurnGraph, cch: &Cch, scratch: &mut Scra
 /// Only how long the fastest route takes, in seconds: what a matrix of routes asks for.
 pub fn duration_cch(turns: &TurnGraph, cch: &Cch, scratch: &mut Scratch, from: &[Snap], to: &[Snap]) -> Option<f64> {
     cch_best(turns, cch, scratch, from, to, false).map(|b| b.total as f64 / 10.0)
+}
+
+/// What a point of a matrix is for the many-to-many search: what it starts or ends with in each of its
+/// directions, and what a start leaves behind.
+struct Endpoint {
+    labels: Vec<Label>,
+    base: i64,
+}
+
+/// A cell: its duration, or that it needs a query of its own because two points are on one edge.
+enum Cell {
+    Done(Option<f64>),
+    Own,
+}
+
+/// The durations from each point of `from` to each of `to`, in seconds (each point is the list of its
+/// snaps; an empty one has no street near and its row or column is `None`), the same as
+/// `duration_cch` for every pair but with the work shared: one walk up the elimination tree for each
+/// point, and for each cell the sum over the ancestors that the two share. The rows are split among
+/// the processors there are.
+pub fn durations_cch(turns: &TurnGraph, cch: &Cch, scratch: &mut Scratch, from: &[Vec<Snap>], to: &[Vec<Snap>]) -> Vec<Vec<Option<f64>>> {
+    let behind = |f: &Snap| part(f.fraction, turns.edge_ds[f.edge as usize]);
+    let starts: Vec<Option<Endpoint>> = from
+        .iter()
+        .map(|snaps| {
+            let base = snaps.iter().map(behind).max()?;
+            Some(Endpoint { labels: snaps.iter().map(|f| cch.label(scratch, f.edge, (base - behind(f)) as u32, false)).collect(), base })
+        })
+        .collect();
+    let ends: Vec<Option<Endpoint>> = to
+        .iter()
+        .map(|snaps| {
+            let labels = snaps.iter().map(|t| cch.label(scratch, t.edge, part(t.fraction, turns.edge_ds[t.edge as usize]) as u32, true)).collect();
+            (!snaps.is_empty()).then_some(Endpoint { labels, base: 0 })
+        })
+        .collect();
+
+    let cell = |i: usize, j: usize| -> Cell {
+        let (Some(start), Some(end)) = (&starts[i], &ends[j]) else { return Cell::Done(None) };
+        if from[i].iter().any(|f| to[j].iter().any(|t| f.edge == t.edge)) {
+            return Cell::Own;
+        }
+        let best = start.labels.iter().flat_map(|a| end.labels.iter().map(move |b| Label::meet(a, b))).min().unwrap_or(INF);
+        Cell::Done((best < INF).then(|| (best as i64 - start.base) as f64 / 10.0))
+    };
+    let threads = std::thread::available_parallelism().map_or(1, |n| n.get()).min(from.len().max(1));
+    let rows_per_thread = from.len().div_ceil(threads).max(1);
+    let cell = &cell;
+    let mut cells: Vec<Vec<Cell>> = std::thread::scope(|scope| {
+        let chunks: Vec<_> = (0..from.len())
+            .step_by(rows_per_thread)
+            .map(|first| scope.spawn(move || (first..(first + rows_per_thread).min(from.len())).map(|i| (0..to.len()).map(|j| cell(i, j)).collect::<Vec<_>>()).collect::<Vec<_>>()))
+            .collect();
+        chunks.into_iter().flat_map(|c| c.join().expect("a thread of the matrix")).collect()
+    });
+    cells
+        .iter_mut()
+        .enumerate()
+        .map(|(i, row)| {
+            row.iter_mut()
+                .enumerate()
+                .map(|(j, c)| match c {
+                    Cell::Done(duration) => *duration,
+                    Cell::Own => duration_cch(turns, cch, scratch, &from[i], &to[j]),
+                })
+                .collect()
+        })
+        .collect()
 }
 
 
@@ -378,6 +446,28 @@ mod tests {
     fn the_hierarchy_gives_the_same_routes_on_a_crossing() {
         let (g, t) = cross();
         same_as_dijkstra(&g, &t, &[(0.0, -0.0005), (0.0, 0.0005), (0.0005, 0.0), (-0.0005, 0.0), (0.0, -0.0008), (0.0, -0.0002)]);
+    }
+
+    #[test]
+    fn a_matrix_is_what_each_pair_gives() {
+        let (g, t) = cross();
+        let cch = Cch::new(&t);
+        let mut scratch = Scratch::new(&cch);
+        let snapper = Snapper::new(&g, vec![true; g.edges.len()]);
+        // Pairs on one edge (both ways of the west arm), points on different arms, and one with no street near.
+        let points = [(0.0, -0.0005), (0.0, -0.0008), (0.0, 0.0005), (0.0005, 0.0), (-0.0005, 0.0), (0.0, -0.0002), (1.0, 1.0)];
+        let snaps: Vec<Vec<Snap>> = points.iter().map(|p| snapper.snap(&g, p.0, p.1, 100.0)).collect();
+        assert!(snaps[6].is_empty());
+        let matrix = durations_cch(&t, &cch, &mut scratch, &snaps, &snaps);
+        for (i, row) in matrix.iter().enumerate() {
+            for (j, got) in row.iter().enumerate() {
+                let expected = if snaps[i].is_empty() || snaps[j].is_empty() { None } else { duration_cch(&t, &cch, &mut scratch, &snaps[i], &snaps[j]) };
+                assert_eq!(*got, expected, "{:?} -> {:?}", points[i], points[j]);
+            }
+        }
+        assert!(matrix[0][2].is_some() && matrix[6][0].is_none() && matrix[0][6].is_none());
+        let none: Vec<Vec<Snap>> = Vec::new();
+        assert!(durations_cch(&t, &cch, &mut scratch, &none, &snaps).is_empty());
     }
 
     #[test]
