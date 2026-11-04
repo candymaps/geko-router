@@ -1,0 +1,9 @@
+# The golden routes of Spain (ci/golden.sh): Baleares, without traffic, and Madrid, with a frozen
+# reading of its sensors.
+
+[baleares]
+extracts = ["islas-baleares-latest.osm.pbf"]
+
+[madrid]
+extracts = ["madrid-latest.osm.pbf"]
+feed = "madrid-pm.xml"
