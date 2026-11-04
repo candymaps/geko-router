@@ -3,8 +3,43 @@
 //! out the ones a car cannot get out of (`scc`).
 
 use std::collections::HashMap;
+use std::collections::hash_map::Entry;
+use std::hash::{BuildHasherDefault, Hasher};
 
 use crate::graph::{Graph, haversine_m};
+
+/// The hash of the multiplicative family that rustc uses: keys here are small integers the program
+/// itself makes, so the protection against collisions that `SipHash` pays for is not needed, and
+/// the two maps of the snapper have millions of entries.
+#[derive(Default)]
+struct IntHasher(u64);
+
+impl IntHasher {
+    fn add(&mut self, value: u64) {
+        self.0 = (self.0.rotate_left(5) ^ value).wrapping_mul(0x517c_c1b7_2722_0a95);
+    }
+}
+
+impl Hasher for IntHasher {
+    fn write(&mut self, bytes: &[u8]) {
+        bytes.iter().for_each(|b| self.add(u64::from(*b)));
+    }
+    fn write_u32(&mut self, value: u32) {
+        self.add(u64::from(value));
+    }
+    fn write_i32(&mut self, value: i32) {
+        self.add(u64::from(value as u32));
+    }
+    fn finish(&self) -> u64 {
+        // The low bits of a product depend only on the low bits of the factors: fold the high ones in.
+        self.0 ^ (self.0 >> 32)
+    }
+}
+
+type Map<K, V> = HashMap<K, V, BuildHasherDefault<IntHasher>>;
+
+/// The segments that cross each cell: shape and segment within it.
+type Cells = Map<(i32, i32), Vec<(u32, u32)>>;
 
 const CELL_DEG: f64 = 0.002;
 const M_PER_DEG_LAT: f64 = 110_574.0;
@@ -22,10 +57,18 @@ pub struct Snap {
     pub point: [f64; 2],
 }
 
+/// How many maps the cells are split in: a fixed number, so that the index does not depend on the machine.
+const BANDS: usize = 16;
+
+fn band_of(row: i32) -> usize {
+    row.rem_euclid(BANDS as i32) as usize
+}
+
 pub struct Snapper {
-    cells: HashMap<(i32, i32), Vec<(u32, u32)>>,
+    /// By band of rows (`band_of`).
+    cells: Vec<Cells>,
     /// The edges that share a shape: the two directions of a street.
-    by_shape: HashMap<u32, Vec<u32>>,
+    by_shape: Map<u32, Vec<u32>>,
     allowed: Vec<bool>,
 }
 
@@ -49,26 +92,47 @@ fn project(p: [f64; 2], a: [f64; 2], b: [f64; 2]) -> (f64, f64, [f64; 2]) {
 impl Snapper {
     /// `allowed[e]` says whether edge `e` may be snapped to.
     pub fn new(graph: &Graph, allowed: Vec<bool>) -> Self {
-        let mut by_shape: HashMap<u32, Vec<u32>> = HashMap::new();
+        let mut by_shape: Map<u32, Vec<u32>> = Map::default();
+        let mut shapes: Vec<(u32, u32)> = Vec::new();
         // Only what can be snapped to: a segment fills the cells of its box, and a ferry in diagonal
         // across a sea, which no point lands on, would fill thousands.
         for (i, e) in graph.edges.iter().enumerate().filter(|(i, _)| allowed[*i]) {
-            by_shape.entry(e.shape_start).or_default().push(i as u32);
+            match by_shape.entry(e.shape_start) {
+                Entry::Occupied(mut edges) => edges.get_mut().push(i as u32),
+                Entry::Vacant(slot) => {
+                    slot.insert(vec![i as u32]);
+                    shapes.push((e.shape_start, e.shape_len));
+                }
+            }
         }
-        let mut cells: HashMap<(i32, i32), Vec<(u32, u32)>> = HashMap::new();
-        for (&start, edges) in &by_shape {
-            let edge = &graph.edges[edges[0] as usize];
-            let points = &graph.shapes[start as usize..(start + edge.shape_len) as usize];
+        // In the order of the graph, which follows the ways of the extract and so goes street by street:
+        // the cells of one shape are next to those of the previous one, which the cache likes.
+        shapes.sort_unstable();
+        // The cells are split in bands of rows, each built by a thread that keeps the cells of its own:
+        // the same content, in the same order, as one map would have, and nobody waits for anybody.
+        let cells = std::thread::scope(|scope| {
+            let (shapes, graph) = (&shapes, graph);
+            let builders: Vec<_> = (0..BANDS).map(|b| scope.spawn(move || Self::band(graph, shapes, b))).collect();
+            builders.into_iter().map(|builder| builder.join().expect("a thread of the snapper")).collect()
+        });
+        Self { cells, by_shape, allowed }
+    }
+
+    /// The cells of the rows of band `b` that the segments of `shapes` (start and length of each) cross.
+    fn band(graph: &Graph, shapes: &[(u32, u32)], b: usize) -> Cells {
+        let mut cells = Cells::default();
+        for &(start, len) in shapes {
+            let points = &graph.shapes[start as usize..(start + len) as usize];
             for (i, pair) in points.windows(2).enumerate() {
                 let ((r0, c0), (r1, c1)) = (cell(pair[0][0], pair[0][1]), cell(pair[1][0], pair[1][1]));
-                for r in r0.min(r1)..=r0.max(r1) {
+                for r in (r0.min(r1)..=r0.max(r1)).filter(|r| band_of(*r) == b) {
                     for c in c0.min(c1)..=c0.max(c1) {
                         cells.entry((r, c)).or_default().push((start, i as u32));
                     }
                 }
             }
         }
-        Self { cells, by_shape, allowed }
+        cells
     }
 
     /// The closest street within `max_m` of the coordinate, in each direction a car can use it.
@@ -85,7 +149,7 @@ impl Snapper {
                     if (r - row).abs().max((c - col).abs()) != ring {
                         continue;
                     }
-                    for &(shape, i) in self.cells.get(&(r, c)).map_or(&[][..], Vec::as_slice) {
+                    for &(shape, i) in self.cells[band_of(r)].get(&(r, c)).map_or(&[][..], Vec::as_slice) {
                         if !self.by_shape[&shape].iter().any(|e| self.allowed[*e as usize]) {
                             continue;
                         }
@@ -199,7 +263,29 @@ mod tests {
         let g = graph(&[node(1, 0.0, 0.0), node(2, 1.0, 1.0), node(3, 2.0, 2.0), node(4, 2.0, 2.001), way(10, &[1, 2], &[]), way(11, &[3, 4], &[])]);
         let allowed: Vec<bool> = g.edges.iter().map(|e| e.way == 11).collect();
         let snapper = Snapper::new(&g, allowed);
-        assert!(snapper.cells.len() < 10, "{} cells", snapper.cells.len());
+        let cells: usize = snapper.cells.iter().map(Map::len).sum();
+        assert!(cells < 10, "{cells} cells");
+    }
+
+    #[test]
+    fn the_bands_hold_the_same_cells_as_one_map_would() {
+        // Streets over many rows, so that every band has some: each cell must be where `snap` looks.
+        let mut elements = Vec::new();
+        for i in 0..40i64 {
+            elements.push(node(2 * i + 1, i as f64 * 0.0021, 0.0));
+            elements.push(node(2 * i + 2, i as f64 * 0.0021, 0.01));
+            elements.push(way(100 + i, &[2 * i + 1, 2 * i + 2], &[]));
+        }
+        let g = graph(&elements);
+        let snapper = Snapper::new(&g, all(&g));
+        for (band, map) in snapper.cells.iter().enumerate() {
+            assert!(!map.is_empty(), "band {band} is empty");
+            assert!(map.keys().all(|(row, _)| band_of(*row) == band));
+        }
+        for i in 0..40 {
+            let snaps = snapper.snap(&g, i as f64 * 0.0021 + 0.0001, 0.005, 100.0);
+            assert_eq!(snaps.len(), 2, "street {i}");
+        }
     }
 
     #[test]
