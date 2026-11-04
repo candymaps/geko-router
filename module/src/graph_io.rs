@@ -47,69 +47,89 @@ pub fn write(graph: &Graph, path: &Path) -> Result<()> {
     Ok(())
 }
 
+const NODE_BYTES: usize = 8 + 8 + 8 + 1;
+const EDGE_BYTES: usize = 4 + 4 + 8 + 4 + 4 + 4 + 4 + 1 + 1;
+const SHAPE_BYTES: usize = 16;
+const RESTRICTION_BYTES: usize = 8 + 4 + 8 + 1;
+
+/// Reads from a slice whose size `read` has already checked, so that no field can run past its end.
 struct Reader<'a> {
     bytes: &'a [u8],
     at: usize,
 }
 
 impl Reader<'_> {
-    fn take<const N: usize>(&mut self) -> Result<[u8; N]> {
-        let end = self.at + N;
-        let slice = self.bytes.get(self.at..end).ok_or_else(|| GekoError::Data("the graph file is truncated".into()))?;
-        self.at = end;
-        Ok(slice.try_into().expect("N bytes"))
+    fn take<const N: usize>(&mut self) -> [u8; N] {
+        let field = self.bytes[self.at..self.at + N].try_into().expect("N bytes");
+        self.at += N;
+        field
     }
 
-    fn u8(&mut self) -> Result<u8> {
-        Ok(self.take::<1>()?[0])
+    fn u8(&mut self) -> u8 {
+        self.take::<1>()[0]
     }
-    fn u32(&mut self) -> Result<u32> {
-        Ok(u32::from_le_bytes(self.take()?))
+    fn u32(&mut self) -> u32 {
+        u32::from_le_bytes(self.take())
     }
-    fn u64(&mut self) -> Result<u64> {
-        Ok(u64::from_le_bytes(self.take()?))
+    fn u64(&mut self) -> u64 {
+        u64::from_le_bytes(self.take())
     }
-    fn i64(&mut self) -> Result<i64> {
-        Ok(i64::from_le_bytes(self.take()?))
+    fn i64(&mut self) -> i64 {
+        i64::from_le_bytes(self.take())
     }
-    fn f32(&mut self) -> Result<f32> {
-        Ok(f32::from_le_bytes(self.take()?))
+    fn f32(&mut self) -> f32 {
+        f32::from_le_bytes(self.take())
     }
-    fn f64(&mut self) -> Result<f64> {
-        Ok(f64::from_le_bytes(self.take()?))
+    fn f64(&mut self) -> f64 {
+        f64::from_le_bytes(self.take())
     }
 }
 
 pub fn read(path: &Path) -> Result<Graph> {
+    let truncated = || GekoError::Data("the graph file is truncated".into());
     let bytes = std::fs::read(path)?;
-    let mut r = Reader { bytes: &bytes, at: 0 };
-    if &r.take::<8>()? != MAGIC {
+    if bytes.get(..8) != Some(MAGIC) {
         return Err(GekoError::Data(format!("{}: not a graph file", path.display())));
     }
-    let (nodes, edges, shapes, restrictions) = (r.u64()? as usize, r.u64()? as usize, r.u64()? as usize, r.u64()? as usize);
+    let mut r = Reader { bytes: &bytes, at: 8 };
+    if bytes.len() < 8 + 4 * 8 {
+        return Err(truncated());
+    }
+    let (nodes, edges, shapes, restrictions) = (r.u64() as usize, r.u64() as usize, r.u64() as usize, r.u64() as usize);
+    let body = [(nodes, NODE_BYTES), (edges, EDGE_BYTES), (shapes, SHAPE_BYTES), (restrictions, RESTRICTION_BYTES)]
+        .into_iter()
+        .try_fold(0usize, |sum, (count, size)| count.checked_mul(size).and_then(|bytes| sum.checked_add(bytes)))
+        .ok_or_else(truncated)?;
+    if bytes.len() - r.at < body {
+        return Err(truncated());
+    }
     let mut graph = Graph::default();
+    graph.nodes.reserve_exact(nodes);
+    graph.edges.reserve_exact(edges);
+    graph.shapes.reserve_exact(shapes);
+    graph.restrictions.reserve_exact(restrictions);
     for _ in 0..nodes {
-        graph.nodes.push(Node { osm_id: r.i64()?, lat: r.f64()?, lon: r.f64()?, signal: r.u8()? != 0 });
+        graph.nodes.push(Node { osm_id: r.i64(), lat: r.f64(), lon: r.f64(), signal: r.u8() != 0 });
     }
     for _ in 0..edges {
         graph.edges.push(Edge {
-            from: r.u32()?,
-            to: r.u32()?,
-            way: r.i64()?,
-            length_m: r.f32()?,
-            seconds: r.f32()?,
-            shape_start: r.u32()?,
-            shape_len: r.u32()?,
-            reversed: r.u8()? != 0,
-            ferry: r.u8()? != 0,
+            from: r.u32(),
+            to: r.u32(),
+            way: r.i64(),
+            length_m: r.f32(),
+            seconds: r.f32(),
+            shape_start: r.u32(),
+            shape_len: r.u32(),
+            reversed: r.u8() != 0,
+            ferry: r.u8() != 0,
         });
     }
     for _ in 0..shapes {
-        graph.shapes.push([r.f64()?, r.f64()?]);
+        graph.shapes.push([r.f64(), r.f64()]);
     }
     for _ in 0..restrictions {
-        let (from_way, via, to_way) = (r.i64()?, r.u32()?, r.i64()?);
-        let kind = if r.u8()? != 0 { RestrictionKind::Mandatory } else { RestrictionKind::Prohibited };
+        let (from_way, via, to_way) = (r.i64(), r.u32(), r.i64());
+        let kind = if r.u8() != 0 { RestrictionKind::Mandatory } else { RestrictionKind::Prohibited };
         graph.restrictions.push(Restriction { from_way, via, to_way, kind });
     }
     Ok(graph)
@@ -147,6 +167,20 @@ mod tests {
         write(&graph(), &path).unwrap();
         let bytes = std::fs::read(&path).unwrap();
         std::fs::write(&path, &bytes[..bytes.len() - 5]).unwrap();
+        assert!(read(&path).is_err());
+    }
+
+    #[test]
+    fn counts_that_do_not_fit_are_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("g.bin");
+        let mut bytes = MAGIC.to_vec();
+        for count in [u64::MAX, 1, 1, 1] {
+            bytes.extend_from_slice(&count.to_le_bytes());
+        }
+        std::fs::write(&path, &bytes).unwrap();
+        assert!(read(&path).is_err());
+        std::fs::write(&path, &bytes[..20]).unwrap();
         assert!(read(&path).is_err());
     }
 }
