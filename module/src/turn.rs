@@ -87,7 +87,7 @@ fn bearing(from: [f64; 2], to: [f64; 2]) -> f32 {
 
 /// The bearings with which an edge leaves its first node and arrives at its last, from its first
 /// and last two distinct points.
-fn bearings(graph: &Graph, edge: &Edge) -> (f32, f32) {
+pub(crate) fn bearings(graph: &Graph, edge: &Edge) -> (f32, f32) {
     let points = &graph.shapes[edge.shape_start as usize..(edge.shape_start + edge.shape_len) as usize];
     let at = |i: usize| if edge.reversed { points[points.len() - 1 - i] } else { points[i] };
     let n = points.len();
@@ -96,7 +96,7 @@ fn bearings(graph: &Graph, edge: &Edge) -> (f32, f32) {
     (start, end)
 }
 
-fn turn_angle(arriving: f32, leaving: f32) -> f32 {
+pub(crate) fn turn_angle(arriving: f32, leaving: f32) -> f32 {
     let mut a = leaving - arriving;
     while a > 180.0 {
         a -= 360.0;

@@ -420,6 +420,26 @@ impl Cch {
     /// one walk up the elimination tree however many there are, which is why a point on a street,
     /// with its two directions, costs one search and not four.
     pub fn query_many(&self, scratch: &mut Scratch, sources: &[(u32, u32)], targets: &[(u32, u32)]) -> Option<(u32, u32)> {
+        self.search(scratch, sources, targets, None)
+    }
+
+    /// Every node where the searches from `sources` and to `targets` meet, with the length of the path
+    /// through it, shortest first. Each one is a path from a source to a target (`path` gives it), and
+    /// the best of them is the shortest; the others are the ways round that a route can offer.
+    pub fn meeting_points(&self, scratch: &mut Scratch, sources: &[(u32, u32)], targets: &[(u32, u32)]) -> Vec<(u32, u32)> {
+        let mut meets = Vec::new();
+        self.search(scratch, sources, targets, Some(&mut meets));
+        meets.sort_unstable_by_key(|&(length, meet)| (length, meet));
+        meets
+    }
+
+    /// The turn graph node that the node of rank `rank` is.
+    pub fn node_at(&self, rank: u32) -> u32 {
+        self.node[rank as usize]
+    }
+
+    /// With `all`, nothing is pruned and every meeting is pushed to it as `(length, rank)`.
+    fn search(&self, scratch: &mut Scratch, sources: &[(u32, u32)], targets: &[(u32, u32)], mut all: Option<&mut Vec<(u32, u32)>>) -> Option<(u32, u32)> {
         // A search only reaches ancestors, all of which the walk visits: those are what to clean.
         for v in scratch.touched.drain(..) {
             scratch.forward[v as usize] = INF;
@@ -453,12 +473,18 @@ impl Cch {
             let vi = v as usize;
             scratch.touched.push(v);
             let (forward, backward) = (scratch.forward[vi], scratch.backward[vi]);
-            if forward < INF && backward < INF && forward + backward < best {
-                best = forward + backward;
-                meet = v;
+            if forward < INF && backward < INF {
+                if let Some(all) = all.as_deref_mut() {
+                    all.push((forward + backward, v));
+                }
+                if forward + backward < best {
+                    best = forward + backward;
+                    meet = v;
+                }
             }
             let (start, end) = (self.first_up[vi] as usize, self.first_up[vi + 1] as usize);
-            if forward < best {
+            let keep_going = all.is_some();
+            if forward < best || (keep_going && forward < INF) {
                 for e in start..end {
                     let weight = self.forward[e];
                     if weight >= INF {
@@ -471,7 +497,7 @@ impl Cch {
                     }
                 }
             }
-            if backward < best {
+            if backward < best || (keep_going && backward < INF) {
                 for e in start..end {
                     let weight = self.backward[e];
                     if weight >= INF {

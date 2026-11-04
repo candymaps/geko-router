@@ -27,6 +27,9 @@ pub struct Route {
     pub geometry: Vec<[f64; 2]>,
     /// The edges it goes along, the first and last of them in part.
     pub edges: Vec<u32>,
+    /// How far along its first edge the route starts, and along its last it ends (0 to 1).
+    pub start_fraction: f64,
+    pub end_fraction: f64,
 }
 
 #[derive(Clone, Copy)]
@@ -121,7 +124,7 @@ pub fn route(graph: &Graph, turns: &TurnGraph, from: &[Snap], to: &[Snap]) -> Op
 
 fn assemble(graph: &Graph, edges: Vec<u32>, start: &Snap, end: &Snap, total: i64) -> Route {
     let (geometry, distance_m) = geometry(graph, &edges, start, end);
-    Route { duration_s: total as f64 / 10.0, distance_m, geometry, edges }
+    Route { duration_s: total as f64 / 10.0, distance_m, geometry, edges, start_fraction: start.fraction, end_fraction: end.fraction }
 }
 
 struct Candidate<'a> {
@@ -137,11 +140,7 @@ struct Candidate<'a> {
 fn cch_best<'a>(turns: &TurnGraph, cch: &Cch, scratch: &mut Scratch, from: &'a [Snap], to: &'a [Snap], with_path: bool) -> Option<Candidate<'a>> {
     // Points on different edges, nearly every route: one search for all their directions. What a
     // start leaves behind is taken off, and a search adds only, so all of them start from `base`.
-    if from.iter().all(|f| to.iter().all(|t| f.edge != t.edge)) {
-        let behind = |f: &Snap| part(f.fraction, turns.edge_ds[f.edge as usize]);
-        let base = from.iter().map(behind).max()?;
-        let sources: Vec<(u32, u32)> = from.iter().map(|f| (f.edge, (base - behind(f)) as u32)).collect();
-        let targets: Vec<(u32, u32)> = to.iter().map(|t| (t.edge, part(t.fraction, turns.edge_ds[t.edge as usize]) as u32)).collect();
+    if let Some((sources, targets, base)) = ends(turns, from, to) {
         let (length, meet) = cch.query_many(scratch, &sources, &targets)?;
         let edges = if with_path { cch.path(scratch, meet) } else { Vec::new() };
         let start = from.iter().find(|f| edges.first() == Some(&f.edge)).unwrap_or(&from[0]);
@@ -179,6 +178,107 @@ fn cch_best<'a>(turns: &TurnGraph, cch: &Cch, scratch: &mut Scratch, from: &'a [
         }
     }
     best
+}
+
+type Ends = (Vec<(u32, u32)>, Vec<(u32, u32)>, i64);
+
+/// For points on different edges, nearly every route: where a search starts and ends, each with what
+/// starting or ending there adds, and `base`, what all the starts have in common (a start leaves its part
+/// of the edge behind, and a search only adds, so all of them start from `base`).
+fn ends(turns: &TurnGraph, from: &[Snap], to: &[Snap]) -> Option<Ends> {
+    if !from.iter().all(|f| to.iter().all(|t| f.edge != t.edge)) {
+        return None;
+    }
+    let behind = |f: &Snap| part(f.fraction, turns.edge_ds[f.edge as usize]);
+    let base = from.iter().map(behind).max()?;
+    let sources = from.iter().map(|f| (f.edge, (base - behind(f)) as u32)).collect();
+    let targets = to.iter().map(|t| (t.edge, part(t.fraction, turns.edge_ds[t.edge as usize]) as u32)).collect();
+    Some((sources, targets, base))
+}
+
+/// How much longer than the fastest an alternative may take, as a fraction of it.
+const MAX_STRETCH: f64 = 0.25;
+/// How much of an alternative may be along a route already given, as a fraction of its own duration.
+const MAX_SHARING: f64 = 0.8;
+/// How much longer than the shortest way the part of an alternative around its meeting point may be,
+/// as a fraction of it: the alternative is not a detour that a better road avoids.
+const LOCAL_SLACK: f64 = 0.05;
+/// How many different paths are looked at to find the alternatives.
+const MAX_TRIALS: usize = 64;
+
+/// The fastest route and up to `count` alternatives to it, fastest first. An alternative is a path
+/// through another meeting point of the two searches (`Cch::meeting_points`) that is at most
+/// `MAX_STRETCH` longer than the fastest, shares at most `MAX_SHARING` of itself with each route already
+/// given, and is locally optimal: the part of it around its meeting point, a quarter of the alternative
+/// long, is within `LOCAL_SLACK` of the shortest way between its ends. Only for points on different
+/// edges; else there are no alternatives.
+pub fn alternatives_cch(graph: &Graph, turns: &TurnGraph, cch: &Cch, scratch: &mut Scratch, from: &[Snap], to: &[Snap], count: usize) -> Vec<Route> {
+    let Some((sources, targets, base)) = ends(turns, from, to).filter(|_| count > 0) else {
+        return route_cch(graph, turns, cch, scratch, from, to).into_iter().collect();
+    };
+    let meets = cch.meeting_points(scratch, &sources, &targets);
+    let Some(&(shortest, _)) = meets.first() else { return Vec::new() };
+    let limit = shortest as f64 - base as f64;
+    let limit = (limit * (1.0 + MAX_STRETCH)) as i64 + base;
+
+    // Unpack the paths first: every later search overwrites what the meeting points left in the scratch.
+    let mut paths: Vec<(i64, u32, Vec<u32>)> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for &(length, meet) in &meets {
+        if length as i64 > limit || paths.len() >= MAX_TRIALS {
+            break;
+        }
+        let at = cch.node_at(meet);
+        if seen.contains(&at) {
+            continue;
+        }
+        let edges = cch.path(scratch, meet);
+        seen.extend(edges.iter().copied());
+        paths.push((length as i64 - base, at, edges));
+    }
+
+    let ds = |e: u32| u64::from(turns.edge_ds[e as usize]);
+    let mut given: Vec<(i64, Vec<u32>)> = Vec::new();
+    let mut routes = Vec::new();
+    for (i, (total, at, edges)) in paths.into_iter().enumerate() {
+        if i > 0 {
+            if routes.len() > count {
+                break;
+            }
+            let own: u64 = edges.iter().map(|e| ds(*e)).sum();
+            let shares_too_much = given.iter().any(|(_, other)| {
+                let shared: u64 = edges.iter().filter(|e| other.contains(e)).map(|e| ds(*e)).sum();
+                shared as f64 > MAX_SHARING * own as f64
+            });
+            if shares_too_much || !locally_optimal(turns, cch, scratch, &edges, at, total) {
+                continue;
+            }
+        }
+        let start = from.iter().find(|f| edges.first() == Some(&f.edge)).unwrap_or(&from[0]);
+        let end = to.iter().find(|t| edges.last() == Some(&t.edge)).unwrap_or(&to[0]);
+        routes.push(assemble(graph, edges.clone(), start, end, total));
+        given.push((total, edges));
+    }
+    routes
+}
+
+/// Whether the part of `edges` around `at`, up to an eighth of `total` ds each way, is a shortest way
+/// between its ends, give or take `LOCAL_SLACK`.
+fn locally_optimal(turns: &TurnGraph, cch: &Cch, scratch: &mut Scratch, edges: &[u32], at: u32, total: i64) -> bool {
+    let Some(k) = edges.iter().position(|e| *e == at) else { return true };
+    let mut reached = vec![0u64];
+    for pair in edges.windows(2) {
+        let weight = turns.arcs_from(pair[0]).iter().find(|a| a.head == pair[1]).map_or(0, |a| u64::from(a.weight_ds));
+        reached.push(reached.last().copied().unwrap_or(0) + weight);
+    }
+    let reach = (total.max(0) as u64) / 8;
+    let a = (0..=k).find(|i| reached[k] - reached[*i] <= reach).unwrap_or(k);
+    let b = (k..edges.len()).rev().find(|i| reached[*i] - reached[k] <= reach).unwrap_or(k);
+    if a >= b {
+        return true;
+    }
+    let own = reached[b] - reached[a];
+    cch.query(scratch, edges[a], edges[b]).is_some_and(|(shortest, _)| own as f64 <= shortest as f64 * (1.0 + LOCAL_SLACK))
 }
 
 /// The fastest route, the same as `route`.
@@ -440,6 +540,42 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Two streets from the west stub to the east stub, one straight and one round by the north, and a
+    /// third that goes so far south that it is no alternative.
+    fn two_ways() -> (Graph, TurnGraph) {
+        network(&[
+            node(10, 0.0, -0.001),
+            node(1, 0.0, 0.0),
+            node(2, 0.0, 0.003),
+            node(3, 0.0, 0.006),
+            node(11, 0.0, 0.007),
+            node(4, 0.0002, 0.0),
+            node(5, 0.0002, 0.006),
+            node(6, -0.003, 0.003),
+            way(20, &[10, 1], &[]),
+            way(21, &[1, 2, 3], &[]),
+            way(22, &[3, 11], &[]),
+            way(23, &[1, 4, 5, 3], &[]),
+            way(24, &[1, 6, 3], &[]),
+        ])
+    }
+
+    #[test]
+    fn a_route_has_the_alternative_that_is_not_too_long_and_not_the_same() {
+        let (g, t) = two_ways();
+        let cch = Cch::new(&t);
+        let mut scratch = Scratch::new(&cch);
+        let snapper = Snapper::new(&g, vec![true; g.edges.len()]);
+        let (from, to) = (snapper.snap(&g, 0.0, -0.0005, 100.0), snapper.snap(&g, 0.0, 0.0065, 100.0));
+        let best = route_cch(&g, &t, &cch, &mut scratch, &from, &to).unwrap();
+        let routes = alternatives_cch(&g, &t, &cch, &mut scratch, &from, &to, 5);
+        assert_eq!(routes.len(), 2, "{routes:?}");
+        assert_eq!(routes[0], best);
+        assert!(routes[1].duration_s > best.duration_s && routes[1].duration_s <= best.duration_s * 1.25, "{} vs {}", routes[1].duration_s, best.duration_s);
+        assert_ne!(routes[1].edges, best.edges);
+        assert_eq!(alternatives_cch(&g, &t, &cch, &mut scratch, &from, &to, 0), vec![best]);
     }
 
     #[test]

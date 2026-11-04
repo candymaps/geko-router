@@ -16,6 +16,7 @@ pub mod route;
 pub mod scc;
 mod serve;
 pub mod snap;
+pub mod steps;
 pub mod traffic;
 pub mod turn;
 pub mod utm;
@@ -49,13 +50,15 @@ impl Module for RouterModule {
             version: geko_module_sdk::module_version!().to_owned(),
             contract: module::CONTRACT,
             routes: vec![
+                Route { method: Method::Get, path: "".into(), pool: false, public: true },
+                Route { method: Method::Get, path: "openapi.yaml".into(), pool: false, public: false },
                 Route { method: Method::Get, path: "v1/status".into(), pool: false, public: false },
                 Route { method: Method::Get, path: "v1/route".into(), pool: true, public: false },
                 Route { method: Method::Get, path: "v1/nearest".into(), pool: true, public: false },
                 Route { method: Method::Get, path: "v1/table".into(), pool: true, public: false },
                 Route { method: Method::Post, path: "v1/table".into(), pool: true, public: false },
             ],
-            openapi: None,
+            openapi: Some("openapi.yaml".into()),
             attribution: Some(self.attribution()),
             commands: vec![],
         }

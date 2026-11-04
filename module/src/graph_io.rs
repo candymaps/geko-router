@@ -9,12 +9,12 @@ use geko_module_sdk::{GekoError, Result};
 
 use crate::graph::{Edge, Graph, Node, Restriction, RestrictionKind};
 
-const MAGIC: &[u8; 8] = b"GEKORG03";
+const MAGIC: &[u8; 8] = b"GEKORG04";
 
 pub fn write(graph: &Graph, path: &Path) -> Result<()> {
     let mut out = BufWriter::new(File::create(path)?);
     out.write_all(MAGIC)?;
-    for count in [graph.nodes.len(), graph.edges.len(), graph.shapes.len(), graph.restrictions.len()] {
+    for count in [graph.nodes.len(), graph.edges.len(), graph.shapes.len(), graph.restrictions.len(), graph.names.len()] {
         out.write_all(&(count as u64).to_le_bytes())?;
     }
     for n in &graph.nodes {
@@ -31,6 +31,7 @@ pub fn write(graph: &Graph, path: &Path) -> Result<()> {
         out.write_all(&e.seconds.to_le_bytes())?;
         out.write_all(&e.shape_start.to_le_bytes())?;
         out.write_all(&e.shape_len.to_le_bytes())?;
+        out.write_all(&e.name.to_le_bytes())?;
         out.write_all(&[e.reversed as u8, e.ferry as u8])?;
     }
     for [lat, lon] in &graph.shapes {
@@ -43,12 +44,17 @@ pub fn write(graph: &Graph, path: &Path) -> Result<()> {
         out.write_all(&r.to_way.to_le_bytes())?;
         out.write_all(&[matches!(r.kind, RestrictionKind::Mandatory) as u8])?;
     }
+    for name in &graph.names {
+        out.write_all(&(name.len() as u32).to_le_bytes())?;
+        out.write_all(name.as_bytes())?;
+    }
     out.flush()?;
     Ok(())
 }
 
 const NODE_BYTES: usize = 8 + 8 + 8 + 1;
-const EDGE_BYTES: usize = 4 + 4 + 8 + 4 + 4 + 4 + 4 + 1 + 1;
+const EDGE_BYTES: usize = 4 + 4 + 8 + 4 + 4 + 4 + 4 + 4 + 1 + 1;
+const NAME_HEADER_BYTES: usize = 4;
 const SHAPE_BYTES: usize = 16;
 const RESTRICTION_BYTES: usize = 8 + 4 + 8 + 1;
 
@@ -92,11 +98,11 @@ pub fn read(path: &Path) -> Result<Graph> {
         return Err(GekoError::Data(format!("{}: not a graph file", path.display())));
     }
     let mut r = Reader { bytes: &bytes, at: 8 };
-    if bytes.len() < 8 + 4 * 8 {
+    if bytes.len() < 8 + 5 * 8 {
         return Err(truncated());
     }
-    let (nodes, edges, shapes, restrictions) = (r.u64() as usize, r.u64() as usize, r.u64() as usize, r.u64() as usize);
-    let body = [(nodes, NODE_BYTES), (edges, EDGE_BYTES), (shapes, SHAPE_BYTES), (restrictions, RESTRICTION_BYTES)]
+    let (nodes, edges, shapes, restrictions, names) = (r.u64() as usize, r.u64() as usize, r.u64() as usize, r.u64() as usize, r.u64() as usize);
+    let body = [(nodes, NODE_BYTES), (edges, EDGE_BYTES), (shapes, SHAPE_BYTES), (restrictions, RESTRICTION_BYTES), (names, NAME_HEADER_BYTES)]
         .into_iter()
         .try_fold(0usize, |sum, (count, size)| count.checked_mul(size).and_then(|bytes| sum.checked_add(bytes)))
         .ok_or_else(truncated)?;
@@ -108,6 +114,7 @@ pub fn read(path: &Path) -> Result<Graph> {
     graph.edges.reserve_exact(edges);
     graph.shapes.reserve_exact(shapes);
     graph.restrictions.reserve_exact(restrictions);
+    graph.names.reserve_exact(names);
     for _ in 0..nodes {
         graph.nodes.push(Node { osm_id: r.i64(), lat: r.f64(), lon: r.f64(), signal: r.u8() != 0 });
     }
@@ -120,6 +127,7 @@ pub fn read(path: &Path) -> Result<Graph> {
             seconds: r.f32(),
             shape_start: r.u32(),
             shape_len: r.u32(),
+            name: r.u32(),
             reversed: r.u8() != 0,
             ferry: r.u8() != 0,
         });
@@ -132,6 +140,18 @@ pub fn read(path: &Path) -> Result<Graph> {
         let kind = if r.u8() != 0 { RestrictionKind::Mandatory } else { RestrictionKind::Prohibited };
         graph.restrictions.push(Restriction { from_way, via, to_way, kind });
     }
+    for _ in 0..names {
+        if bytes.len() - r.at < NAME_HEADER_BYTES {
+            return Err(truncated());
+        }
+        let len = r.u32() as usize;
+        if bytes.len() - r.at < len {
+            return Err(truncated());
+        }
+        let name = std::str::from_utf8(&bytes[r.at..r.at + len]).map_err(|_| GekoError::Data("the graph file has a name that is not UTF-8".into()))?;
+        graph.names.push(name.to_owned());
+        r.at += len;
+    }
     Ok(graph)
 }
 
@@ -142,9 +162,10 @@ mod tests {
     fn graph() -> Graph {
         Graph {
             nodes: vec![Node { osm_id: 7, lat: 39.5, lon: 2.6, signal: true }, Node { osm_id: -3, lat: 39.6, lon: 2.7, signal: false }],
-            edges: vec![Edge { from: 0, to: 1, way: 99, length_m: 12.5, seconds: 1.5, shape_start: 0, shape_len: 2, reversed: true, ferry: true }],
+            edges: vec![Edge { from: 0, to: 1, way: 99, length_m: 12.5, seconds: 1.5, shape_start: 0, shape_len: 2, name: 0, reversed: true, ferry: true }],
             shapes: vec![[39.5, 2.6], [39.6, 2.7]],
             restrictions: vec![Restriction { from_way: 99, via: 1, to_way: 100, kind: RestrictionKind::Mandatory }],
+            names: vec!["Carrer de Sant Miquel".into(), "Ma-13".into()],
         }
     }
 
@@ -175,7 +196,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("g.bin");
         let mut bytes = MAGIC.to_vec();
-        for count in [u64::MAX, 1, 1, 1] {
+        for count in [u64::MAX, 1, 1, 1, 1] {
             bytes.extend_from_slice(&count.to_le_bytes());
         }
         std::fs::write(&path, &bytes).unwrap();

@@ -238,15 +238,29 @@ Generación del router: 8,3 M de aristas, 14,6 M de giros, 408 s y 3,1 GB de pic
 ### B. API de la fase 1
 
 - [x] 8. **[decisión]** Formato de la API: propio, documentado en `openapi.yaml` (punto 12). Sin capa de compatibilidad con OSRM.
-- [ ] 9. Alternativas y pasos en `route`.
+- [x] 9. Alternativas y pasos en `route`.
+  - Nombres de calle en el grafo: `Edge.name` (índice en `Graph::names`, `name` o si no `ref`); el fichero pasa a `GEKORG04` (hay que reconstruir el grafo con `geko build --force`).
+  - Pasos (`?steps=true`, módulo `steps`): `depart`, `turn` (con `modifier`: slight/sharp left/right, left, right, uturn), `new name` (la calle cambia y se sigue recto) y `arrive`; cada uno con `name`, `distance_m`, `duration_s` y `location`. Se leen del ángulo entre la arista que llega y la que sale, y de sus nombres. Sin glorietas, salidas ni carriles todavía.
+  - Alternativas (`?alternatives=n`, n ≤ 3, `Cch::meeting_points` + `route::alternatives_cch`): cada nodo donde se encuentran las dos búsquedas da un camino; se admite el que no pasa de un 25 % más largo que el más rápido, comparte como mucho el 80 % de sí mismo con cada ruta ya dada y es localmente óptimo (tramo de un cuarto de su duración en torno al nodo, a menos de un 5 % del camino más corto entre sus extremos). Solo para puntos en aristas distintas.
+  - Validación (Baleares, 116 rutas aleatorias de Mallorca): los pasos suman exactamente la distancia y la duración de la ruta; 85 de 116 rutas tienen alguna alternativa (137 en total), ninguna pasa de 1,25× de la más rápida.
+  - Coste (300 pares aleatorios, mediana de `compute_us`, dos rondas): ruta sola 231–257 µs; con pasos 296; con 2 alternativas 685–779 µs (p99 2,1–2,5 ms); con ambas 860–889 µs.
+  - Test: `a_route_has_the_alternative_that_is_not_too_long_and_not_the_same`, los de `steps`, y el de lectura/escritura del grafo con nombres.
 - [x] 10. `table` con un algoritmo muchos-a-muchos, hasta 1.000×1.000, y segunda medición.
   - Algoritmo: cada punto da una etiqueta (`Cch::label`: distancias hacia arriba a todos sus ancestros en el árbol de eliminación); una celda es la mejor suma sobre los ancestros comunes (`Label::meet`). Las filas se reparten entre hilos.
   - `GET /v1/table` (puntos repetidos `from`/`to`) y `POST /v1/table` con cuerpo `{"from":[[lat,lon],…],"to":[…],"snap_m":n}`. Límites: 1.000.000 celdas y 2.000 puntos por lado.
   - Medición (Baleares, 1.000×1.000 aleatorios en Mallorca, un `POST`, máquina en reposo): 0,25–0,44 s de cómputo, 0,29–0,38 s totales con 6 MB de respuesta. El método anterior, una consulta por celda (≈230 µs cada una en `route`), costaría unos 230 s: ≈500–900 veces más.
   - Exactitud: 1.875 celdas de `POST /v1/table` contra `GET /v1/route` por pares, 0 diferencias (tolerancia 0,1 s del redondeo).
   - Fallo hallado y corregido en la validación en vivo: `label` suponía limpio el `Scratch`, pero `query_many` lo limpia al empezar la siguiente consulta; tras una ruta, la primera tabla salía errónea. Prueba `labels_after_a_query_are_those_of_a_clean_scratch`.
-- [ ] 11. Índice espacial del plan (R-tree de Hilbert), o decidir que basta la rejilla actual.
-- [ ] 12. `openapi.yaml` y demo en `/router/`.
+- [x] 11. Índice espacial del plan (R-tree de Hilbert), o decidir que basta la rejilla actual. **Decidido: basta la rejilla.**
+  - Medición con `examples/snapbench` (Baleares, 200.000 puntos, índice de 91–120 ms):
+    - Cerca de calles: mediana 13 µs, p90 27–28 µs, p99 57–60 µs, media 16 µs, con 100 m o 1.000 m de límite.
+    - Puntos cualesquiera del rectángulo (casi todos en el mar o el monte): mediana 0,5 µs con 100 m; 3,4 µs con 1.000 m (p99 11 µs).
+  - Una ruta cuesta unos 230 µs, así que el ajuste a la calle es menos del 10 % de una petición y no es el cuello de botella. Un R-tree no lo cambiaría de forma apreciable; queda descartado.
+  - Máximos aislados de 6–7 ms (celdas densas o ruido de la máquina), no repetidos en el p99.
+- [x] 12. `openapi.yaml` y demo en `/router/`.
+  - `openapi.yaml` en la raíz del repo (como el del geocoder), servido en `/router/openapi.yaml` y listado en `/docs` del host (comprobado en vivo). Documenta `status`, `route` (con `steps` y `alternatives`), `nearest` y `table` (GET y POST). Es un YAML válido (cargado con PyYAML).
+  - Demo en `/router/` (ruta `""` pública, `module/src/demo.html`, autocontenida, sin peticiones fuera del servidor ni mapa base): clic en el mapa para origen y destino, zoom y arrastre, rutas y alternativas dibujadas, pasos en palabras. Pide `v1/status` (que ahora da `bounds`) para encuadrar. Ambas páginas se sirven aunque no haya grafo cargado.
+  - **Sin verificar en un navegador**: la extensión de Chrome no estaba conectada y no hay `node` para comprobar la sintaxis del script. Solo está probado que el servidor la sirve (200, `text/html`) y que no menciona URLs externas.
 
 ### C. Packs de país
 

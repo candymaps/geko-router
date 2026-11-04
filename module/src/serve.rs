@@ -13,6 +13,7 @@ use crate::cch::{Cch, Scratch};
 use crate::graph::Graph;
 use crate::pipeline::{GRAPH_FILE, GRAPH_PART, HIERARCHY_FILE};
 use crate::route::{self, durations_cch};
+use crate::steps;
 use crate::scc;
 use crate::snap::{Snap, Snapper};
 use crate::traffic::{FREE_FLOW, Traffic};
@@ -24,6 +25,10 @@ const MIN_COMPONENT: u32 = 1000;
 /// How far from the road a point may be and still snap to it, unless the request says otherwise.
 const DEFAULT_SNAP_M: f64 = 1000.0;
 const MAX_SNAP_M: f64 = 50_000.0;
+const MAX_ALTERNATIVES: usize = 3;
+/// The reference of the API, and the page that tries it.
+pub const OPENAPI: &str = include_str!("../../openapi.yaml");
+const DEMO: &str = include_str!("demo.html");
 /// The most cells of a matrix, and the most points on a side of it: a request must not hold a thread
 /// for long, and the answer has a number for each cell.
 const MAX_TABLE_CELLS: usize = 1_000_000;
@@ -50,13 +55,21 @@ pub struct Loaded {
     scratches: Mutex<Vec<Scratch>>,
     /// When the sources last answered, which can be after the last change of the weights.
     updated: Mutex<Instant>,
+    /// `[min lat, min lon, max lat, max lon]` of the nodes, found the first time it is asked.
+    bounds: std::sync::OnceLock<[f64; 4]>,
 }
 
 impl Loaded {
     fn new(graph: Graph, free: TurnGraph, snapper: Snapper, cch: Cch) -> Self {
         let free = Arc::new(free);
         let turns = Arc::clone(&free);
-        Self { graph, free, snapper, live: RwLock::new(Arc::new(Weighted { turns, cch, slowed_edges: None, measured: Vec::new() })), scratches: Mutex::new(Vec::new()), updated: Mutex::new(Instant::now()) }
+        Self { graph, free, snapper, live: RwLock::new(Arc::new(Weighted { turns, cch, slowed_edges: None, measured: Vec::new() })), scratches: Mutex::new(Vec::new()), updated: Mutex::new(Instant::now()), bounds: std::sync::OnceLock::new() }
+    }
+
+    fn bounds(&self) -> [f64; 4] {
+        *self.bounds.get_or_init(|| {
+            self.graph.nodes.iter().fold([f64::MAX, f64::MAX, f64::MIN, f64::MIN], |b, n| [b[0].min(n.lat), b[1].min(n.lon), b[2].max(n.lat), b[3].max(n.lon)])
+        })
     }
 
     fn weighted(&self) -> Arc<Weighted> {
@@ -109,8 +122,21 @@ impl Loaded {
         found
     }
 
-    fn route(&self, weighted: &Weighted, from: &[Snap], to: &[Snap]) -> Option<route::Route> {
-        self.with_scratch(weighted, |scratch| route::route_cch(&self.graph, &weighted.turns, &weighted.cch, scratch, from, to))
+    /// The fastest route and up to `alternatives` others.
+    fn routes(&self, weighted: &Weighted, from: &[Snap], to: &[Snap], alternatives: usize) -> Vec<route::Route> {
+        self.with_scratch(weighted, |scratch| route::alternatives_cch(&self.graph, &weighted.turns, &weighted.cch, scratch, from, to, alternatives))
+    }
+
+    /// What a response says of a route: its time, its length and, if asked, its line and its steps.
+    fn route_json(&self, weighted: &Weighted, route: &route::Route, geometry: bool, steps: bool) -> serde_json::Value {
+        let mut body = serde_json::json!({ "duration_s": route.duration_s, "distance_m": route.distance_m });
+        if geometry {
+            body["geometry"] = serde_json::json!({ "type": "LineString", "coordinates": route.geometry.iter().map(|p| [p[1], p[0]]).collect::<Vec<_>>() });
+        }
+        if steps {
+            body["steps"] = steps::steps(&self.graph, &weighted.turns, route).iter().map(step_json).collect();
+        }
+        body
     }
 }
 
@@ -182,6 +208,30 @@ fn snapped_json(snaps: &[Snap]) -> Option<serde_json::Value> {
     snaps.first().map(|s| serde_json::json!({ "lat": s.point[0], "lon": s.point[1], "distance_m": s.distance_m }))
 }
 
+fn step_json(step: &steps::Step) -> serde_json::Value {
+    let mut body = serde_json::json!({
+        "maneuver": step.maneuver,
+        "distance_m": step.distance_m,
+        "duration_s": step.duration_s,
+        "location": [step.location[1], step.location[0]],
+    });
+    if let Some(modifier) = step.modifier {
+        body["modifier"] = modifier.into();
+    }
+    if let Some(name) = &step.name {
+        body["name"] = name.as_str().into();
+    }
+    body
+}
+
+/// The `alternatives` of a request: how many other routes it asks for.
+fn alternatives(request: &Request) -> std::result::Result<usize, String> {
+    match query(request, "alternatives") {
+        None => Ok(0),
+        Some(v) => v.parse::<usize>().ok().filter(|n| *n <= MAX_ALTERNATIVES).ok_or_else(|| format!("`alternatives` is a number from 0 to {MAX_ALTERNATIVES}: {v:?}")),
+    }
+}
+
 /// Which share of a route, by length, a source says something of. The first and last edges count
 /// whole: on a route of any length that is noise, and it is a share, not a measurement.
 fn coverage(graph: &Graph, edges: &[u32], measured: &[bool]) -> serde_json::Value {
@@ -234,11 +284,16 @@ impl Server {
     }
 
     pub fn handle(&self, request: &Request) -> Response {
+        match request.route.as_str() {
+            "" => return Response::new(200, "text/html; charset=utf-8", DEMO),
+            "openapi.yaml" => return Response::new(200, "application/yaml", OPENAPI),
+            _ => {}
+        }
         let Some(loaded) = self.current() else {
             return Response::error(503, "the router has no graph yet").with_header("Retry-After", "60");
         };
         match request.route.as_str() {
-            "v1/status" => json(200, serde_json::json!({ "nodes": loaded.graph.nodes.len(), "edges": loaded.graph.edges.len(), "turns": loaded.free.arcs.len(), "traffic": loaded.traffic(&loaded.weighted()) })),
+            "v1/status" => json(200, serde_json::json!({ "nodes": loaded.graph.nodes.len(), "edges": loaded.graph.edges.len(), "turns": loaded.free.arcs.len(), "bounds": loaded.bounds(), "traffic": loaded.traffic(&loaded.weighted()) })),
             "v1/route" => self.route(&loaded, request),
             "v1/table" => self.table(&loaded, request),
             "v1/nearest" => self.nearest(&loaded, request),
@@ -265,6 +320,11 @@ impl Server {
             Err(e) => return self.bad(&e),
         };
         let geometry = !matches!(query(request, "geometry"), Some("false" | "0"));
+        let with_steps = matches!(query(request, "steps"), Some("true" | "1"));
+        let wanted = match alternatives(request) {
+            Ok(n) => n,
+            Err(e) => return self.bad(&e),
+        };
 
         let started = Instant::now();
         let snap = |(lat, lon): (f64, f64)| loaded.snapper.snap(&loaded.graph, lat, lon, snap_m);
@@ -275,10 +335,13 @@ impl Server {
             return json(422, serde_json::json!({ "error": format!("no street within {snap_m} m of `{which}`") }));
         };
         let weighted = loaded.weighted();
-        let Some(found) = loaded.route(&weighted, &snapped_from, &snapped_to) else {
+        let mut found = loaded.routes(&weighted, &snapped_from, &snapped_to, wanted);
+        if found.is_empty() {
             self.no_route.fetch_add(1, Ordering::Relaxed);
             return json(404, serde_json::json!({ "error": "no route between the points" }));
-        };
+        }
+        let others = found.split_off(1);
+        let found = found.remove(0);
         self.ok.fetch_add(1, Ordering::Relaxed);
         // Always an object: a route says what is known of it, also when that is nothing.
         let mut traffic = loaded.traffic(&weighted);
@@ -286,16 +349,20 @@ impl Server {
             traffic = serde_json::json!({});
         }
         traffic["coverage"] = coverage(&loaded.graph, &found.edges, &weighted.measured);
-        let mut body = serde_json::json!({
-            "duration_s": found.duration_s,
-            "distance_m": found.distance_m,
-            "snapped": { "from": origin, "to": destination },
-            "compute_us": started.elapsed().as_micros() as u64,
-            "traffic": traffic,
-        });
-        if geometry {
-            body["geometry"] = serde_json::json!({ "type": "LineString", "coordinates": found.geometry.iter().map(|p| [p[1], p[0]]).collect::<Vec<_>>() });
+        let mut body = loaded.route_json(&weighted, &found, geometry, with_steps);
+        body["snapped"] = serde_json::json!({ "from": origin, "to": destination });
+        body["traffic"] = traffic;
+        if wanted > 0 {
+            body["alternatives"] = others
+                .iter()
+                .map(|other| {
+                    let mut alternative = loaded.route_json(&weighted, other, geometry, with_steps);
+                    alternative["coverage"] = coverage(&loaded.graph, &other.edges, &weighted.measured);
+                    alternative
+                })
+                .collect();
         }
+        body["compute_us"] = (started.elapsed().as_micros() as u64).into();
         json(200, body)
     }
 
@@ -440,7 +507,7 @@ mod tests {
     #[test]
     fn only_the_measured_part_of_a_route_is_live() {
         let graph_edges = [(100.0, true), (300.0, false)];
-        let graph = Graph { edges: graph_edges.iter().map(|(m, _)| crate::graph::Edge { from: 0, to: 0, way: 0, length_m: *m, seconds: 0.0, shape_start: 0, shape_len: 0, reversed: false, ferry: false }).collect(), ..Default::default() };
+        let graph = Graph { edges: graph_edges.iter().map(|(m, _)| crate::graph::Edge { from: 0, to: 0, way: 0, length_m: *m, seconds: 0.0, shape_start: 0, shape_len: 0, reversed: false, ferry: false, name: crate::graph::NO_NAME }).collect(), ..Default::default() };
         let measured: Vec<bool> = graph_edges.iter().map(|(_, m)| *m).collect();
         assert_eq!(coverage(&graph, &[0, 1], &measured), serde_json::json!({ "live": 0.25, "free_flow": 0.75 }));
         assert_eq!(coverage(&graph, &[0, 1], &[]), serde_json::json!({ "live": 0.0, "free_flow": 1.0 }));
@@ -534,6 +601,46 @@ mod tests {
         assert!(body["snapped"]["from"]["distance_m"].as_f64().unwrap() < 0.01);
         let (_, short) = get(&server, &[("from", "0,-0.0005"), ("to", "0.0005,0"), ("geometry", "false")]);
         assert!(short.get("geometry").is_none());
+    }
+
+    #[test]
+    fn the_page_and_the_reference_need_no_graph() {
+        let server = Server::default();
+        for (route, kind, start) in [("", "text/html; charset=utf-8", "<!doctype html>"), ("openapi.yaml", "application/yaml", "openapi: 3.1")] {
+            let response = server.handle(&Request { route: route.into(), ..Default::default() });
+            assert_eq!((response.status, response.content_type.as_str()), (200, kind), "{route:?}");
+            assert!(String::from_utf8(response.body).unwrap().starts_with(start), "{route:?}");
+        }
+        for path in ["/:", "/v1/status:", "/v1/route:", "/v1/nearest:", "/v1/table:"] {
+            assert!(OPENAPI.contains(&format!("\n  {path}\n")), "{path}");
+        }
+        assert!(!DEMO.contains("http://") && !DEMO.contains("https://"), "the page makes no request outside the server");
+    }
+
+    #[test]
+    fn a_route_with_steps_and_the_status_with_its_bounds() {
+        let server = server();
+        let (status, body) = get(&server, &[("from", "0,-0.0005"), ("to", "0.0005,0"), ("steps", "true"), ("alternatives", "2")]);
+        assert_eq!(status, 200, "{body}");
+        let steps = body["steps"].as_array().unwrap();
+        assert_eq!((steps[0]["maneuver"].clone(), steps[steps.len() - 1]["maneuver"].clone()), ("depart".into(), "arrive".into()));
+        let total: f64 = steps.iter().map(|s| s["distance_m"].as_f64().unwrap()).sum();
+        assert!((total - body["distance_m"].as_f64().unwrap()).abs() < 1.0, "{body}");
+        assert!(body["alternatives"].is_array());
+        let (_, plain) = get(&server, &[("from", "0,-0.0005"), ("to", "0.0005,0")]);
+        assert!(plain.get("steps").is_none() && plain.get("alternatives").is_none());
+        let (_, status) = ask(&server, "v1/status", &[]);
+        assert_eq!(status["bounds"], serde_json::json!([-0.001, -0.001, 0.001, 0.001]));
+    }
+
+    #[test]
+    fn too_many_alternatives_are_refused() {
+        let server = server();
+        for value in ["4", "-1", "x"] {
+            let (status, body) = get(&server, &[("from", "0,-0.0005"), ("to", "0.0005,0"), ("alternatives", value)]);
+            assert_eq!(status, 400, "{value}: {body}");
+            assert!(body["error"].as_str().unwrap().contains("alternatives"), "{body}");
+        }
     }
 
     #[test]

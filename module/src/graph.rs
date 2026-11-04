@@ -37,7 +37,11 @@ pub struct Edge {
     pub reversed: bool,
     /// A crossing by ferry: routes take it, but no point is ever on it.
     pub ferry: bool,
+    /// Its street, an index of `Graph::names`, or `NO_NAME`.
+    pub name: u32,
 }
+
+pub const NO_NAME: u32 = u32::MAX;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RestrictionKind {
@@ -63,9 +67,16 @@ pub struct Graph {
     pub edges: Vec<Edge>,
     pub shapes: Vec<[f64; 2]>,
     pub restrictions: Vec<Restriction>,
+    /// The names of the streets (`name`, or else `ref`), each once, in the order the ways name them.
+    pub names: Vec<String>,
 }
 
 impl Graph {
+    /// The name of the street of `edge`, if it has one.
+    pub fn name(&self, edge: &Edge) -> Option<&str> {
+        self.names.get(edge.name as usize).map(String::as_str)
+    }
+
     /// `allowed` without the ferries: the edges a point can snap to. Someone at the shore is on the
     /// road of the port, not on the line of a ferry out at sea.
     pub fn without_ferries(&self, mut allowed: Vec<bool>) -> Vec<bool> {
@@ -88,6 +99,7 @@ struct UsableWay {
     direction: Direction,
     ferry: bool,
     duration_s: Option<f32>,
+    name: Option<String>,
 }
 
 struct RawRestriction {
@@ -135,7 +147,7 @@ impl Builder {
                 for node in refs {
                     *self.uses.entry(*node).or_default() += 1;
                 }
-                self.ways.push(UsableWay { id: *id, refs: refs.clone(), speed_kmh: way.speed_kmh, direction: way.direction, ferry: way.ferry, duration_s: way.duration_s });
+                self.ways.push(UsableWay { id: *id, refs: refs.clone(), speed_kmh: way.speed_kmh, direction: way.direction, ferry: way.ferry, duration_s: way.duration_s, name: tag(tags, "name").or_else(|| tag(tags, "ref")).filter(|n| !n.is_empty()).map(str::to_owned) });
             }
             Element::Relation { id, members, tags } => {
                 if tag(tags, "type") != Some("restriction") || !self.seen_relations.insert(*id) {
@@ -168,6 +180,7 @@ impl Builder {
         let via_nodes: HashSet<i64> = self.restrictions.iter().map(|r| r.via_node).collect();
         let mut graph = Graph::default();
         let mut index: HashMap<i64, u32> = HashMap::new();
+        let mut name_index: HashMap<&str, u32> = HashMap::new();
         let signals = &self.signals;
         let mut node =|graph: &mut Graph, osm_id: i64, (lat, lon): (f64, f64)| -> u32 {
             *index.entry(osm_id).or_insert_with(|| {
@@ -177,6 +190,12 @@ impl Builder {
         };
 
         for way in &self.ways {
+            let name = way.name.as_deref().map_or(NO_NAME, |n| {
+                *name_index.entry(n).or_insert_with(|| {
+                    graph.names.push(n.to_owned());
+                    (graph.names.len() - 1) as u32
+                })
+            });
             // A way that says how long it lasts shares that out among its edges by length.
             let way_m: f64 = way.refs.windows(2).filter_map(|w| Some(haversine_m(*self.coords.get(&w[0])?, *self.coords.get(&w[1])?))).sum();
             // A node outside the extract cuts the way: what is on each side stays a way of its own.
@@ -201,7 +220,7 @@ impl Builder {
                         _ => length_m / (way.speed_kmh / 3.6),
                     };
                     let (a, b) = (node(&mut graph, points[0].0, points[0].1), node(&mut graph, id, run[i].1));
-                    let edge = |from, to, reversed| Edge { from, to, way: way.id, length_m, seconds, shape_start, shape_len: points.len() as u32, reversed, ferry: way.ferry };
+                    let edge = |from, to, reversed| Edge { from, to, way: way.id, length_m, seconds, shape_start, shape_len: points.len() as u32, reversed, ferry: way.ferry, name };
                     if matches!(way.direction, Direction::Both | Direction::Forward) {
                         graph.edges.push(edge(a, b, false));
                     }

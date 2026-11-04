@@ -1,0 +1,227 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>geko router</title>
+<style>
+:root { --bg: #f6f7f9; --panel: #fff; --ink: #1c2330; --muted: #637085; --line: #d5dae3; --accent: #1f6feb; --alt: #e07b00; --good: #1a7f37; --canvas: #eef1f5; }
+@media (prefers-color-scheme: dark) { :root { --bg: #11151c; --panel: #1a202b; --ink: #e6e9ef; --muted: #98a2b3; --line: #2c3544; --accent: #5aa2ff; --alt: #ffa63a; --good: #4cc26a; --canvas: #151b25; } }
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.4 system-ui, sans-serif; }
+main { display: grid; grid-template-columns: 340px 1fr; height: 100vh; }
+aside { background: var(--panel); border-right: 1px solid var(--line); padding: 16px; overflow: auto; }
+h1 { font-size: 18px; margin: 0 0 4px; }
+.muted { color: var(--muted); font-size: 12px; }
+label { display: block; margin: 12px 0 4px; font-weight: 600; font-size: 12px; }
+input[type=text], input[type=number], input[type=password] { width: 100%; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--ink); font: inherit; }
+.row { display: flex; gap: 8px; align-items: center; }
+.row > * { flex: 1; }
+.row .fit { flex: none; }
+button { padding: 7px 12px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--ink); font: inherit; cursor: pointer; }
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+button.on { border-color: var(--accent); color: var(--accent); }
+.routes { margin-top: 16px; }
+.route { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; margin-bottom: 8px; cursor: pointer; }
+.route.chosen { border-color: var(--accent); }
+.route b { font-size: 16px; }
+ol { margin: 8px 0 0; padding-left: 22px; font-size: 12px; }
+ol li { margin-bottom: 2px; }
+.error { color: #cf222e; margin-top: 12px; }
+.stats { margin-top: 12px; font-size: 12px; color: var(--muted); }
+#view { width: 100%; height: 100%; display: block; background: var(--canvas); cursor: crosshair; touch-action: none; }
+@media (max-width: 760px) { main { grid-template-columns: 1fr; grid-template-rows: auto 60vh; height: auto; } aside { border-right: 0; border-bottom: 1px solid var(--line); } }
+</style>
+</head>
+<body>
+<main>
+<aside>
+  <h1>geko router</h1>
+  <div class="muted">Click the map to set the origin, then the destination. There is no base map: the lines are the routes themselves. Scroll to zoom, drag to move.</div>
+  <label for="key">API key (only if the server asks for one)</label>
+  <input id="key" type="password" autocomplete="off">
+  <label for="from">From (lat,lon)</label>
+  <input id="from" type="text" placeholder="39.5696,2.6502">
+  <label for="to">To (lat,lon)</label>
+  <input id="to" type="text" placeholder="39.7000,3.0000">
+  <div class="row" style="margin-top:12px">
+    <label style="margin:0">Alternatives <input id="alts" type="number" min="0" max="3" value="2"></label>
+    <label style="margin:0"><input id="steps" type="checkbox" checked> Steps</label>
+  </div>
+  <div class="row" style="margin-top:12px">
+    <button class="primary" id="go">Route</button>
+    <button id="swap" class="fit" title="Swap origin and destination">&#8645;</button>
+    <button id="clear" class="fit">Clear</button>
+  </div>
+  <div id="error" class="error" hidden></div>
+  <div id="stats" class="stats"></div>
+  <div id="routes" class="routes"></div>
+</aside>
+<canvas id="view"></canvas>
+</main>
+<script>
+"use strict";
+const base = location.pathname.replace(/\/?$/, "/");
+const $ = id => document.getElementById(id);
+const canvas = $("view"), ctx = canvas.getContext("2d");
+const state = { from: null, to: null, routes: [], chosen: 0, view: null, bounds: null };
+const colors = () => { const s = getComputedStyle(document.documentElement); return { accent: s.getPropertyValue("--accent"), alt: s.getPropertyValue("--alt"), ink: s.getPropertyValue("--ink"), muted: s.getPropertyValue("--muted"), good: s.getPropertyValue("--good") }; };
+
+const headers = () => { const key = $("key").value.trim(); return key ? { "X-Api-Key": key } : {}; };
+async function call(path) {
+  const response = await fetch(base + path, { headers: headers() });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(body.error || response.status + " " + response.statusText);
+  return body;
+}
+
+// The view maps lon/lat to pixels with an equirectangular projection around its centre.
+function fit(bounds) {
+  const [s, w, n, e] = bounds, midLat = (s + n) / 2;
+  const k = Math.cos(midLat * Math.PI / 180);
+  const scale = Math.min(canvas.width / ((e - w) * k || 1e-3), canvas.height / ((n - s) || 1e-3)) * 0.9;
+  state.view = { lat: midLat, lon: (w + e) / 2, scale, k };
+}
+const toPixel = (lat, lon) => { const v = state.view; return [canvas.width / 2 + (lon - v.lon) * v.k * v.scale, canvas.height / 2 - (lat - v.lat) * v.scale]; };
+const toCoordinate = (x, y) => { const v = state.view; return [v.lat - (y - canvas.height / 2) / v.scale, v.lon + (x - canvas.width / 2) / (v.k * v.scale)]; };
+
+function resize() {
+  const ratio = window.devicePixelRatio || 1, box = canvas.getBoundingClientRect();
+  canvas.width = Math.round(box.width * ratio); canvas.height = Math.round(box.height * ratio);
+  draw();
+}
+function draw() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  if (!state.view) return;
+  const c = colors(), ratio = window.devicePixelRatio || 1;
+  const order = state.routes.map((_, i) => i).sort((a, b) => (a === state.chosen) - (b === state.chosen));
+  ctx.lineJoin = "round"; ctx.lineCap = "round";
+  for (const i of order) {
+    const route = state.routes[i];
+    if (!route.geometry) continue;
+    ctx.beginPath();
+    route.geometry.coordinates.forEach(([lon, lat], j) => { const [x, y] = toPixel(lat, lon); j ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
+    ctx.strokeStyle = i === state.chosen ? c.accent : c.alt;
+    ctx.globalAlpha = i === state.chosen ? 1 : 0.7;
+    ctx.lineWidth = (i === state.chosen ? 5 : 4) * ratio;
+    ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+  const chosen = state.routes[state.chosen];
+  if (chosen && chosen.steps) {
+    ctx.fillStyle = c.ink;
+    for (const step of chosen.steps) if (step.maneuver !== "depart" && step.maneuver !== "arrive") { const [x, y] = toPixel(step.location[1], step.location[0]); ctx.beginPath(); ctx.arc(x, y, 3 * ratio, 0, 7); ctx.fill(); }
+  }
+  for (const [point, color] of [[state.from, c.good], [state.to, "#cf222e"]]) {
+    if (!point) continue;
+    const [x, y] = toPixel(point[0], point[1]);
+    ctx.beginPath(); ctx.arc(x, y, 7 * ratio, 0, 7); ctx.fillStyle = color; ctx.fill();
+    ctx.lineWidth = 2 * ratio; ctx.strokeStyle = "#fff"; ctx.stroke();
+  }
+}
+
+const parse = text => { const m = text.match(/^\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*$/); return m ? [+m[1], +m[2]] : null; };
+const format = p => p[0].toFixed(5) + "," + p[1].toFixed(5);
+function setPoint(name, point) { state[name] = point; $(name).value = point ? format(point) : ""; }
+const duration = s => { s = Math.round(s); const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60); return h ? `${h} h ${m} min` : m ? `${m} min ${s % 60} s` : `${s} s`; };
+const distance = m => m >= 1000 ? (m / 1000).toFixed(1) + " km" : Math.round(m) + " m";
+const words = step => {
+  const street = step.name ? " on " + step.name : "";
+  switch (step.maneuver) {
+    case "depart": return "Head off" + street;
+    case "arrive": return "Arrive" + street;
+    case "turn": return (step.modifier === "straight" ? "Go straight" : step.modifier === "uturn" ? "Make a U-turn" : "Turn " + step.modifier) + (step.name ? " onto " + step.name : "");
+    default: return "Continue" + (step.name ? " onto " + step.name : "");
+  }
+};
+
+function show() {
+  const list = $("routes"); list.textContent = "";
+  state.routes.forEach((route, i) => {
+    const box = document.createElement("div"); box.className = "route" + (i === state.chosen ? " chosen" : "");
+    const title = document.createElement("div");
+    const strong = document.createElement("b"); strong.textContent = duration(route.duration_s);
+    title.append(strong, " · " + distance(route.distance_m) + (i ? " · alternative " + i : " · fastest"));
+    box.append(title);
+    if (i === state.chosen && route.steps) {
+      const steps = document.createElement("ol");
+      for (const step of route.steps) { const li = document.createElement("li"); li.textContent = words(step) + (step.distance_m >= 1 ? " (" + distance(step.distance_m) + ")" : ""); steps.append(li); }
+      box.append(steps);
+    }
+    box.onclick = () => { state.chosen = i; show(); draw(); };
+    list.append(box);
+  });
+}
+
+async function go() {
+  const from = parse($("from").value), to = parse($("to").value);
+  const error = $("error"); error.hidden = true;
+  if (!from || !to) { error.textContent = "Give the origin and the destination as lat,lon."; error.hidden = false; return; }
+  state.from = from; state.to = to;
+  const alts = Math.max(0, Math.min(3, +$("alts").value || 0));
+  const query = `v1/route?from=${from}&to=${to}&alternatives=${alts}&steps=${$("steps").checked}`;
+  try {
+    const started = performance.now();
+    const body = await call(query);
+    const elapsed = performance.now() - started;
+    state.routes = [body, ...(body.alternatives || [])]; state.chosen = 0;
+    $("stats").textContent = `Computed in ${(body.compute_us / 1000).toFixed(1)} ms, ${elapsed.toFixed(0)} ms with the network.` + (body.traffic && body.traffic.slowed_edges !== undefined ? ` Live traffic: ${body.traffic.slowed_edges} slow edges.` : "");
+    const line = body.geometry ? body.geometry.coordinates : [];
+    if (line.length) {
+      const lats = line.map(p => p[1]), lons = line.map(p => p[0]);
+      fit([Math.min(...lats), Math.min(...lons), Math.max(...lats), Math.max(...lons)]);
+    }
+    show(); draw();
+  } catch (e) { error.textContent = e.message; error.hidden = false; state.routes = []; show(); draw(); }
+}
+
+let clicks = 0, drag = null;
+canvas.addEventListener("pointerdown", e => { drag = { x: e.clientX, y: e.clientY, lat: state.view && state.view.lat, lon: state.view && state.view.lon, moved: false }; canvas.setPointerCapture(e.pointerId); });
+canvas.addEventListener("pointermove", e => {
+  if (!drag || !state.view) return;
+  const ratio = window.devicePixelRatio || 1, dx = (e.clientX - drag.x) * ratio, dy = (e.clientY - drag.y) * ratio;
+  if (Math.abs(dx) + Math.abs(dy) > 4 * ratio) drag.moved = true;
+  if (drag.moved) { state.view.lon = drag.lon - dx / (state.view.k * state.view.scale); state.view.lat = drag.lat + dy / state.view.scale; draw(); }
+});
+canvas.addEventListener("pointerup", e => {
+  if (drag && !drag.moved && state.view) {
+    const ratio = window.devicePixelRatio || 1, box = canvas.getBoundingClientRect();
+    const point = toCoordinate((e.clientX - box.left) * ratio, (e.clientY - box.top) * ratio);
+    setPoint(clicks++ % 2 ? "to" : "from", point);
+    if (state.from && state.to && clicks % 2 === 0) go(); else draw();
+  }
+  drag = null;
+});
+canvas.addEventListener("wheel", e => {
+  if (!state.view) return;
+  e.preventDefault();
+  const ratio = window.devicePixelRatio || 1, box = canvas.getBoundingClientRect();
+  const x = (e.clientX - box.left) * ratio, y = (e.clientY - box.top) * ratio;
+  const before = toCoordinate(x, y);
+  state.view.scale *= Math.exp(-e.deltaY * 0.0015);
+  const after = toCoordinate(x, y);
+  state.view.lat += before[0] - after[0]; state.view.lon += before[1] - after[1];
+  draw();
+}, { passive: false });
+
+$("go").onclick = go;
+$("swap").onclick = () => { const a = $("from").value; $("from").value = $("to").value; $("to").value = a; };
+$("clear").onclick = () => { setPoint("from", null); setPoint("to", null); state.routes = []; clicks = 0; $("error").hidden = true; $("stats").textContent = ""; show(); draw(); };
+for (const id of ["from", "to"]) $(id).addEventListener("keydown", e => { if (e.key === "Enter") go(); });
+window.addEventListener("resize", resize);
+
+(async () => {
+  resize();
+  try {
+    const status = await call("v1/status");
+    state.bounds = status.bounds; fit(status.bounds);
+    $("stats").textContent = `${status.edges.toLocaleString()} edges, ${status.turns.toLocaleString()} turns loaded.`;
+  } catch (e) {
+    state.view = { lat: 40, lon: -3, scale: 3000, k: Math.cos(40 * Math.PI / 180) };
+    $("stats").textContent = "Status unavailable: " + e.message;
+  }
+  draw();
+})();
+</script>
+</body>
+</html>
