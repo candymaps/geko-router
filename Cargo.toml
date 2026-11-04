@@ -14,6 +14,7 @@ geko-module-sdk = { git = "https://github.com/candymaps/geko.git", tag = "sdk-1"
 geko-module-router = { path = "module" }
 tracing = "0.1"
 geko-fetch = { git = "https://github.com/candymaps/geko.git", tag = "sdk-1" }
+geko-artifact = { git = "https://github.com/candymaps/geko.git", tag = "sdk-1" }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [profile.release]

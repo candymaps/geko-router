@@ -7,32 +7,43 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use geko_module_sdk::scope::Scope;
-
-use crate::config::TrafficConfig;
 use crate::madrid;
+use crate::pack::Source;
+use crate::pipeline::Setup;
 use crate::serve::Loaded;
 use crate::traffic::{FREE_FLOW, Traffic};
 
-/// The sources of live traffic there are.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Source {
-    Madrid,
-}
+/// The only kind of source of live traffic there is, the sensors of Madrid: its reader is
+/// `madrid.rs`, until the providers by `kind` (docs/ROUTER_PLAN.md, point 21).
+const SENSORS: &str = "sensors-xml";
 
-/// The sources to poll: none unless traffic is on, the data may be downloaded (not offline) and the
-/// scope covers what a source measures.
-pub fn wanted(config: &TrafficConfig, scope: &Scope, offline: bool) -> Vec<Source> {
+/// The sources to poll, from the packs of the scope with what `[sources.<name>]` changes in them:
+/// none unless traffic is on, the data may be downloaded (not offline) and the scope holds what a
+/// source measures.
+pub fn wanted(setup: &Setup) -> Vec<Source> {
+    let traffic = &setup.config.traffic;
+    if !(traffic.enabled && traffic.live) || setup.data.offline {
+        return Vec::new();
+    }
     let mut sources = Vec::new();
-    if config.enabled && !offline && config.madrid.enabled && covers_madrid(scope) {
-        sources.push(Source::Madrid);
+    for country in setup.scope.countries() {
+        let pack = match setup.packs.get(country) {
+            Ok(pack) => pack,
+            Err(e) => {
+                tracing::warn!(%country, error = %e, "no traffic: the country pack cannot be read");
+                continue;
+            }
+        };
+        let partitions: Vec<_> = setup.scope.partitions().into_iter().filter(|p| p.country == country).collect();
+        for source in pack.sources.values() {
+            match setup.source(source) {
+                Ok(source) if source.enabled && source.kind == SENSORS && partitions.iter().any(|p| pack.covers(&source, p.region.as_ref())) => sources.push(source),
+                Ok(_) => {}
+                Err(e) => tracing::warn!(error = %e, "a source of traffic is left out"),
+            }
+        }
     }
     sources
-}
-
-fn covers_madrid(scope: &Scope) -> bool {
-    // The community and the province are the same land, under two codes (countries.toml).
-    scope.partitions().iter().any(|p| p.country.to_string() == "ES" && p.region.as_ref().is_none_or(|r| matches!(r.to_string().as_str(), "ES-MD" | "ES-M")))
 }
 
 /// Gets the text of the feed of a source.
@@ -107,28 +118,41 @@ pub fn start(loaded: Arc<Loaded>, interval: Duration, max_age: Duration, mut fet
 mod tests {
     use super::*;
     use crate::config::Config;
+    use crate::pack::Packs;
     use geko_module_sdk::country::{CountryCode, RegionCode};
+    use geko_module_sdk::module::DataPolicy;
+    use geko_module_sdk::scope::Scope;
 
-    fn scope(country: &str, regions: &[&str]) -> Scope {
+    fn setup(config: &str, country: &str, regions: &[&str], offline: bool) -> Setup {
         let mut scope = Scope::default();
         scope.add(CountryCode::new(country).unwrap(), regions.iter().map(|r| RegionCode::new(r).unwrap()).collect()).unwrap();
-        scope
+        let packs = Packs::at(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../countries"), true);
+        Setup { config: Config::parse(config, "").unwrap(), scope, data_dir: "/nowhere".into(), data: DataPolicy { offline, ..DataPolicy::default() }, packs }
     }
 
-    fn traffic(text: &str) -> TrafficConfig {
-        Config::parse(text, "").unwrap().traffic
+    fn names(config: &str, country: &str, regions: &[&str], offline: bool) -> Vec<String> {
+        wanted(&setup(config, country, regions, offline)).into_iter().map(|s| s.name).collect()
     }
 
     #[test]
     fn nothing_is_polled_unless_traffic_is_on_and_the_scope_has_a_source() {
-        let on = traffic("[traffic]\nenabled = true");
-        assert!(wanted(&traffic(""), &scope("ES", &[]), false).is_empty(), "off by default");
-        assert_eq!(wanted(&on, &scope("ES", &[]), false), vec![Source::Madrid]);
-        assert_eq!(wanted(&on, &scope("ES", &["ES-MD"]), false), vec![Source::Madrid]);
-        assert_eq!(wanted(&on, &scope("ES", &["ES-M"]), false), vec![Source::Madrid], "the province, the same land");
-        assert!(wanted(&on, &scope("ES", &["ES-IB"]), false).is_empty(), "Madrid is not in the scope");
-        assert!(wanted(&on, &scope("LU", &[]), false).is_empty(), "no source in Luxembourg");
-        assert!(wanted(&on, &scope("ES", &[]), true).is_empty(), "offline");
-        assert!(wanted(&traffic("[traffic]\nenabled = true\n[traffic.madrid]\nenabled = false"), &scope("ES", &[]), false).is_empty());
+        let on = "[traffic]\nenabled = true";
+        let madrid = ["madrid-sensors"];
+        assert!(names("", "ES", &[], false).is_empty(), "off by default");
+        assert_eq!(names(on, "ES", &[], false), madrid);
+        assert_eq!(names(on, "ES", &["ES-MD"], false), madrid);
+        assert_eq!(names(on, "ES", &["ES-M"], false), madrid, "the province, the same land");
+        assert!(names(on, "ES", &["ES-IB"], false).is_empty(), "Madrid is not in the scope");
+        assert!(names(on, "LU", &[], false).is_empty(), "no source in Luxembourg");
+        assert!(names(on, "ES", &[], true).is_empty(), "offline");
+        assert!(names("[traffic]\nenabled = true\nlive = false", "ES", &[], false).is_empty());
+        assert!(names("[traffic]\nenabled = true\n[sources.madrid-sensors]\nenabled = false", "ES", &[], false).is_empty());
+    }
+
+    #[test]
+    fn a_source_changes_in_the_configuration_and_the_incidents_stay_off() {
+        let sources = wanted(&setup("[traffic]\nenabled = true\n[sources.madrid-sensors]\nrefresh_secs = 600\nttl_secs = 1200\n[sources.dgt-incidents]\nenabled = true", "ES", &[], false));
+        assert_eq!(sources.len(), 1, "no provider reads the incidents yet");
+        assert_eq!((sources[0].refresh_secs, sources[0].ttl_secs), (600, 1200));
     }
 }

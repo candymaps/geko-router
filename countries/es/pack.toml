@@ -6,6 +6,9 @@ country = "ES"
 # tag pack-<version>, and publishing refuses other files under a version already published.
 version = 1
 
+# The profiles the pack has data for (data/road-classes.toml is that of the car).
+profiles = ["car"]
+
 # Time zone of the profiles of historical traffic and of the calendar.
 timezone = "Europe/Madrid"
 

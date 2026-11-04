@@ -4,7 +4,8 @@
 //!
 //! It opens the module as the host does, with the licenses accepted and `geko-router.toml` from
 //! `GEKO_ROUTER_CONFIG` if set, and prints what `build` reports. `--frozen` keeps every download
-//! there is (`refresh = "never"`) and fetches only what is missing.
+//! there is (`refresh = "never"`) and fetches only what is missing. The country packs are those of
+//! `GEKO_ROUTER_PACKS`, or those of the registry.
 
 use geko_module_sdk::country::{CountryCode, RegionCode};
 use geko_module_sdk::module::{Context, DataPolicy, Refresh};
@@ -28,6 +29,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let data = DataPolicy { accept_licenses: true, keep_downloads: true, refresh, ..DataPolicy::default() };
     let module = geko_module_router::open(Context { config, config_file, scope, data_dir: data_dir.into(), data })?;
     let started = std::time::Instant::now();
+    print!("{}", module.prepare()?);
     let built = module.build(force, false)?;
     print!("{}", built.report);
     for s in &built.stages {

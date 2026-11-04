@@ -1,6 +1,7 @@
-//! The routing module (docs/ROUTER_PLAN.md). It downloads the OSM extracts of the scope,
-//! builds the road graph of cars and leaves it as its part of the bundle (`pipeline`), and answers
-//! routes, matrices and the nearest street on it (`serve`), with live traffic if it is asked for (`live`).
+//! The routing module (docs/ROUTER_PLAN.md). With what the country packs of the scope say (`pack`),
+//! it downloads their OSM extracts, builds the road graph of cars and leaves it as its part of the
+//! bundle (`pipeline`), and answers routes, matrices and the nearest street on it (`serve`), with
+//! live traffic if it is asked for (`live`).
 
 mod config;
 pub mod live;
@@ -10,6 +11,7 @@ pub mod cch;
 pub mod graph;
 pub mod graph_io;
 pub mod osm;
+pub mod pack;
 mod pipeline;
 pub mod profile;
 pub mod route;
@@ -21,19 +23,21 @@ pub mod traffic;
 pub mod turn;
 pub mod utm;
 
+use std::fmt::Write as _;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use geko_module_sdk::Result;
-use geko_module_sdk::module::{self, Built, BundleView, Context, Description, Method, Module, ModuleName, Request, Response, Route};
+use geko_module_sdk::module::{self, Built, BundleView, Context, Description, Method, Module, ModuleName, Purge, Request, Response, Route};
 
 use crate::pipeline::Setup;
 
 pub const NAME: &str = "router";
 
 pub fn open(context: Context) -> Result<Box<dyn Module>> {
-    let config = config::Config::parse(&context.config, &context.config_file)?;
-    Ok(Box::new(RouterModule { setup: Setup { config, scope: context.scope, data_dir: context.data_dir, data: context.data }, server: serve::Server::default(), poller: Mutex::new(None) }))
+    Ok(Box::new(RouterModule::new(context)?))
 }
 
 pub struct RouterModule {
@@ -41,6 +45,9 @@ pub struct RouterModule {
     server: serve::Server,
     /// The poll of live traffic, while there is one: dropping it stops it.
     poller: Mutex<Option<live::Poller>>,
+    /// With `[serve] preload = false`: there is a bundle in `pending` that nothing asked for yet.
+    deferred: AtomicBool,
+    pending: Mutex<Option<PathBuf>>,
 }
 
 impl Module for RouterModule {
@@ -64,6 +71,10 @@ impl Module for RouterModule {
         }
     }
 
+    fn prepare(&self) -> Result<String> {
+        pipeline::prepare(&self.setup)
+    }
+
     fn plan(&self) -> Result<String> {
         Ok(pipeline::plan(&self.setup, &pipeline::downloader(&self.setup, false)))
     }
@@ -84,13 +95,24 @@ impl Module for RouterModule {
         pipeline::next_build(&self.setup)
     }
 
+    fn purge(&self, what: Purge) -> Result<String> {
+        let Purge::Packages { all } = what else { return Ok(String::new()) };
+        let scope: Vec<_> = self.setup.scope.countries().collect();
+        let mut out = String::new();
+        for dir in self.setup.packs.purge((!all).then_some(scope.as_slice()))? {
+            writeln!(out, "purged {}", dir.display()).unwrap();
+        }
+        Ok(out)
+    }
+
     fn load(&self, bundle: &BundleView) -> Result<()> {
-        self.server.load(bundle)?;
-        self.restart_traffic();
-        Ok(())
+        self.load_from(&bundle.root)
     }
 
     fn handle(&self, request: Request) -> Response {
+        if self.deferred.load(Ordering::Acquire) && needs_the_graph(&request.route) {
+            self.load_deferred();
+        }
         self.server.handle(&request)
     }
 
@@ -99,7 +121,47 @@ impl Module for RouterModule {
     }
 }
 
+/// The routes that run on the pool, which can wait for a load: `v1/status` says there is no graph.
+fn needs_the_graph(route: &str) -> bool {
+    route.starts_with("v1/") && route != "v1/status"
+}
+
 impl RouterModule {
+    fn new(context: Context) -> Result<Self> {
+        let config = config::Config::parse(&context.config, &context.config_file)?;
+        let packs = pack::Packs::new(&context.data_dir);
+        Ok(Self { setup: Setup { config, scope: context.scope, data_dir: context.data_dir, data: context.data, packs }, server: serve::Server::default(), poller: Mutex::new(None), deferred: AtomicBool::new(false), pending: Mutex::new(None) })
+    }
+
+    fn load_from(&self, root: &Path) -> Result<()> {
+        if self.setup.config.serve.preload {
+            return self.load_now(root);
+        }
+        *self.pending.lock().unwrap_or_else(|e| e.into_inner()) = Some(root.to_owned());
+        self.deferred.store(true, Ordering::Release);
+        Ok(())
+    }
+
+    fn load_now(&self, root: &Path) -> Result<()> {
+        self.server.load(root)?;
+        self.restart_traffic();
+        Ok(())
+    }
+
+    /// The load that `[serve] preload = false` left for now. The requests that arrive meanwhile wait
+    /// for it, and it is tried again if it fails.
+    fn load_deferred(&self) {
+        let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(root) = pending.take() else { return };
+        match self.load_now(&root) {
+            Ok(()) => self.deferred.store(false, Ordering::Release),
+            Err(e) => {
+                tracing::error!(error = %e, "cannot load the bundle");
+                *pending = Some(root);
+            }
+        }
+    }
+
     /// What a response of the router owes to its sources: OpenStreetMap always, and the traffic data
     /// only when they are in use.
     fn attribution(&self) -> serde_json::Value {
@@ -109,11 +171,8 @@ impl RouterModule {
                 "notice": "The road graph is a Derived Database of OpenStreetMap: © OpenStreetMap contributors.",
             },
         });
-        if live::wanted(&self.setup.config.traffic, &self.setup.scope, self.setup.data.offline).contains(&live::Source::Madrid) {
-            attribution["traffic_madrid"] = serde_json::json!({
-                "license": "CC BY 4.0",
-                "notice": "Live traffic of the city of Madrid: © Ayuntamiento de Madrid (datos abiertos), CC BY 4.0.",
-            });
+        for source in live::wanted(&self.setup) {
+            attribution[format!("traffic_{}", source.name)] = serde_json::json!({ "license": source.license.name, "notice": source.license.attribution });
         }
         attribution
     }
@@ -122,17 +181,79 @@ impl RouterModule {
     /// the poll of the previous one. With traffic off, offline or without a source in the scope, it
     /// only stops: nothing is downloaded and nothing runs.
     fn restart_traffic(&self) {
-        let traffic = &self.setup.config.traffic;
         let mut poller = self.poller.lock().unwrap_or_else(|e| e.into_inner());
         *poller = None;
         let Some(loaded) = self.server.current() else { return };
-        for source in live::wanted(traffic, &self.setup.scope, self.setup.data.offline) {
-            match source {
-                live::Source::Madrid => {
-                    let (interval, max_age) = (Duration::from_secs(traffic.interval_secs), Duration::from_secs(traffic.max_age_secs));
-                    *poller = Some(live::start(loaded.clone(), interval, max_age, live::fetch_url(traffic.madrid.url.clone())));
-                }
-            }
+        // One source for now: each reading replaces the one before (docs/ROUTER_PLAN.md, point 23).
+        if let Some(source) = live::wanted(&self.setup).into_iter().next() {
+            *poller = Some(live::start(loaded, Duration::from_secs(source.refresh_secs), Duration::from_secs(source.ttl_secs), live::fetch_url(source.url)));
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use geko_module_sdk::module::DataPolicy;
+    use geko_module_sdk::scope::Scope;
+
+    fn module(config: &str, data_dir: &Path) -> RouterModule {
+        RouterModule::new(Context { config: config.into(), config_file: String::new(), scope: Scope::default(), data_dir: data_dir.into(), data: DataPolicy::default() }).unwrap()
+    }
+
+    /// A bundle with a graph of one road.
+    fn bundle(root: &Path) {
+        use crate::graph::Builder;
+        use crate::osm::Element;
+        let mut builder = Builder::new(crate::profile::Car::from_road_classes("[free_flow_kmh]\nprimary = 90\n").unwrap());
+        let road = [
+            Element::Node { id: 1, lat: 0.0, lon: 0.0, tags: vec![] },
+            Element::Node { id: 2, lat: 0.0, lon: 0.01, tags: vec![] },
+            Element::Way { id: 9, refs: vec![1, 2], tags: vec![("highway".into(), "primary".into())] },
+        ];
+        road.iter().for_each(|e| builder.first_pass(e));
+        road.iter().for_each(|e| builder.second_pass(e));
+        let dir = root.join(pipeline::GRAPH_PART);
+        std::fs::create_dir_all(&dir).unwrap();
+        graph_io::write(&builder.finish(), &dir.join(pipeline::GRAPH_FILE)).unwrap();
+    }
+
+    fn get(route: &str) -> Request {
+        Request { route: route.into(), query: vec![("at".into(), "0,0".into())], ..Default::default() }
+    }
+
+    #[test]
+    fn preload_loads_at_once_and_without_it_the_first_request_that_needs_the_graph_does() {
+        let tmp = tempfile::tempdir().unwrap();
+        bundle(tmp.path());
+
+        let eager = module("", tmp.path());
+        eager.load_from(tmp.path()).unwrap();
+        assert_eq!(eager.handle(get("v1/status")).status, 200);
+
+        let lazy = module("[serve]\npreload = false", tmp.path());
+        lazy.load_from(tmp.path()).unwrap();
+        assert_eq!(lazy.handle(get("v1/status")).status, 503, "not yet");
+        assert_eq!(lazy.handle(get("")).status, 200, "the demo needs no graph");
+        assert_ne!(lazy.handle(get("v1/nearest")).status, 503);
+        assert_eq!(lazy.handle(get("v1/status")).status, 200);
+    }
+
+    #[test]
+    fn a_load_that_fails_is_tried_again() {
+        let tmp = tempfile::tempdir().unwrap();
+        let lazy = module("[serve]\npreload = false", tmp.path());
+        lazy.load_from(tmp.path()).unwrap();
+        assert_eq!(lazy.handle(get("v1/nearest")).status, 503, "no bundle there");
+        bundle(tmp.path());
+        assert_ne!(lazy.handle(get("v1/nearest")).status, 503);
+    }
+
+    #[test]
+    fn the_routes_that_wait_are_those_of_the_pool() {
+        let tmp = tempfile::tempdir().unwrap();
+        for route in module("", tmp.path()).describe().routes {
+            assert_eq!(route.pool, needs_the_graph(&route.path), "{}", route.path);
         }
     }
 }

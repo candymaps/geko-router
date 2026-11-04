@@ -7,11 +7,11 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::Instant;
 
 use geko_module_sdk::Result;
-use geko_module_sdk::module::{BundleView, Request, Response};
+use geko_module_sdk::module::{Request, Response};
 
 use crate::cch::{Cch, Scratch};
 use crate::graph::Graph;
-use crate::pipeline::{GRAPH_FILE, GRAPH_PART, HIERARCHY_FILE};
+use crate::pipeline::{GRAPH_FILE, GRAPH_PART, HIERARCHY_FILE, HIERARCHY_PART};
 use crate::route::{self, durations_cch};
 use crate::steps;
 use crate::scc;
@@ -252,10 +252,10 @@ fn json(status: u16, value: serde_json::Value) -> Response {
 }
 
 impl Server {
-    pub fn load(&self, bundle: &BundleView) -> Result<()> {
-        let dir = bundle.root.join(GRAPH_PART);
-        let graph = graph_io::read(&dir.join(GRAPH_FILE))?;
-        self.install(graph, MIN_COMPONENT, Some(&dir.join(HIERARCHY_FILE)));
+    /// Loads the part of the router of the bundle in `root`.
+    pub fn load(&self, root: &std::path::Path) -> Result<()> {
+        let graph = graph_io::read(&root.join(GRAPH_PART).join(GRAPH_FILE))?;
+        self.install(graph, MIN_COMPONENT, Some(&root.join(HIERARCHY_PART).join(HIERARCHY_FILE)));
         Ok(())
     }
 

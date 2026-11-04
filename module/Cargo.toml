@@ -8,6 +8,7 @@ license.workspace = true
 [dependencies]
 geko-module-sdk.workspace = true
 geko-fetch.workspace = true
+geko-artifact.workspace = true
 osmpbf = "0.3"
 tracing.workspace = true
 serde = { version = "1", features = ["derive"] }
@@ -17,3 +18,12 @@ toml = "0.8"
 [dev-dependencies]
 geko-module-sdk = { workspace = true, features = ["conformance"] }
 tempfile = "3"
+
+# The tests of each pack live in it (countries/<country>/tests/), which is data and has no crate.
+[[test]]
+name = "pack-es"
+path = "../countries/es/tests/pack.rs"
+
+[[test]]
+name = "pack-lu"
+path = "../countries/lu/tests/pack.rs"

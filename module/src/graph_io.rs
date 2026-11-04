@@ -7,9 +7,15 @@ use std::path::Path;
 
 use geko_module_sdk::{GekoError, Result};
 
-use crate::graph::{Edge, Graph, Node, Restriction, RestrictionKind};
+use crate::graph::{Edge, Fragment, Graph, Node, RawRestriction, Restriction, RestrictionKind, UsableWay};
+use crate::profile::Direction;
 
 const MAGIC: &[u8; 8] = b"GEKORG04";
+
+/// The file of the fragment of an extract, a work file that never leaves the machine. It ends as it
+/// starts, so that a file cut short is told from a whole one.
+const FRAGMENT_MAGIC: &[u8; 8] = b"GEKORF01";
+const NO_NAME_LEN: u32 = u32::MAX;
 
 pub fn write(graph: &Graph, path: &Path) -> Result<()> {
     let mut out = BufWriter::new(File::create(path)?);
@@ -155,9 +161,145 @@ pub fn read(path: &Path) -> Result<Graph> {
     Ok(graph)
 }
 
+pub fn write_fragment(fragment: &Fragment, path: &Path) -> Result<()> {
+    let mut out = BufWriter::new(File::create(path)?);
+    out.write_all(FRAGMENT_MAGIC)?;
+    for count in [fragment.ways.len(), fragment.restrictions.len(), fragment.nodes.len()] {
+        out.write_all(&(count as u64).to_le_bytes())?;
+    }
+    for w in &fragment.ways {
+        out.write_all(&w.id.to_le_bytes())?;
+        out.write_all(&w.speed_kmh.to_le_bytes())?;
+        out.write_all(&w.duration_s.unwrap_or(f32::NAN).to_le_bytes())?;
+        out.write_all(&[match w.direction {
+            Direction::Both => 0,
+            Direction::Forward => 1,
+            Direction::Backward => 2,
+        }, w.ferry as u8])?;
+        out.write_all(&(w.refs.len() as u32).to_le_bytes())?;
+        for node in &w.refs {
+            out.write_all(&node.to_le_bytes())?;
+        }
+        match &w.name {
+            Some(name) => {
+                out.write_all(&(name.len() as u32).to_le_bytes())?;
+                out.write_all(name.as_bytes())?;
+            }
+            None => out.write_all(&NO_NAME_LEN.to_le_bytes())?,
+        }
+    }
+    for r in &fragment.restrictions {
+        for id in [r.id, r.from_way, r.via_node, r.to_way] {
+            out.write_all(&id.to_le_bytes())?;
+        }
+        out.write_all(&[matches!(r.kind, RestrictionKind::Mandatory) as u8])?;
+    }
+    for (id, lat, lon, signal) in &fragment.nodes {
+        out.write_all(&id.to_le_bytes())?;
+        out.write_all(&lat.to_le_bytes())?;
+        out.write_all(&lon.to_le_bytes())?;
+        out.write_all(&[*signal as u8])?;
+    }
+    out.write_all(FRAGMENT_MAGIC)?;
+    out.flush()?;
+    Ok(())
+}
+
+pub fn read_fragment(path: &Path) -> Result<Fragment> {
+    let bytes = std::fs::read(path)?;
+    let invalid = || GekoError::Data(format!("{}: not a whole fragment", path.display()));
+    if bytes.len() < 8 + 3 * 8 + 8 || bytes.get(..8) != Some(FRAGMENT_MAGIC) || !bytes.ends_with(FRAGMENT_MAGIC) {
+        return Err(invalid());
+    }
+    let end = bytes.len() - 8;
+    let mut r = Reader { bytes: &bytes[..end], at: 8 };
+    let (ways, restrictions, nodes) = (r.u64() as usize, r.u64() as usize, r.u64() as usize);
+    let mut fragment = Fragment::default();
+    for _ in 0..ways {
+        if end - r.at < 8 + 4 + 4 + 2 + 4 {
+            return Err(invalid());
+        }
+        let (id, speed_kmh, duration_s) = (r.i64(), r.f32(), r.f32());
+        let direction = match r.u8() {
+            0 => Direction::Both,
+            1 => Direction::Forward,
+            2 => Direction::Backward,
+            _ => return Err(invalid()),
+        };
+        let ferry = r.u8() != 0;
+        let refs = r.u32() as usize;
+        if (end - r.at) / 8 < refs || end - r.at - refs * 8 < 4 {
+            return Err(invalid());
+        }
+        let refs = (0..refs).map(|_| r.i64()).collect();
+        let name = match r.u32() {
+            NO_NAME_LEN => None,
+            len => {
+                let len = len as usize;
+                if end - r.at < len {
+                    return Err(invalid());
+                }
+                let name = std::str::from_utf8(&bytes[r.at..r.at + len]).map_err(|_| invalid())?.to_owned();
+                r.at += len;
+                Some(name)
+            }
+        };
+        fragment.ways.push(UsableWay { id, refs, speed_kmh, direction, ferry, duration_s: (!duration_s.is_nan()).then_some(duration_s), name });
+    }
+    let fixed = restrictions.checked_mul(33).and_then(|a| nodes.checked_mul(25).and_then(|b| a.checked_add(b))).ok_or_else(invalid)?;
+    if end - r.at != fixed {
+        return Err(invalid());
+    }
+    fragment.restrictions.reserve_exact(restrictions);
+    for _ in 0..restrictions {
+        let (id, from_way, via_node, to_way) = (r.i64(), r.i64(), r.i64(), r.i64());
+        let kind = if r.u8() != 0 { RestrictionKind::Mandatory } else { RestrictionKind::Prohibited };
+        fragment.restrictions.push(RawRestriction { id, from_way, via_node, to_way, kind });
+    }
+    fragment.nodes.reserve_exact(nodes);
+    for _ in 0..nodes {
+        fragment.nodes.push((r.i64(), r.f64(), r.f64(), r.u8() != 0));
+    }
+    Ok(fragment)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn fragment() -> Fragment {
+        Fragment {
+            ways: vec![
+                UsableWay { id: 5, refs: vec![1, -2], speed_kmh: 50.0, direction: Direction::Backward, ferry: true, duration_s: Some(600.0), name: Some("Ma-13".into()) },
+                UsableWay { id: 6, refs: vec![2, 3, 4], speed_kmh: 25.0, direction: Direction::Both, ferry: false, duration_s: None, name: None },
+            ],
+            restrictions: vec![RawRestriction { id: 9, from_way: 5, via_node: 2, to_way: 6, kind: RestrictionKind::Mandatory }],
+            nodes: vec![(-2, 39.5, 2.6, true), (1, 39.6, 2.7, false)],
+        }
+    }
+
+    #[test]
+    fn a_fragment_round_trips_and_one_cut_short_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let (a, b) = (dir.path().join("a.bin"), dir.path().join("b.bin"));
+        write_fragment(&fragment(), &a).unwrap();
+        let read = read_fragment(&a).unwrap();
+        write_fragment(&read, &b).unwrap();
+        let bytes = std::fs::read(&a).unwrap();
+        assert_eq!(bytes, std::fs::read(&b).unwrap());
+        assert_eq!(read.ways[0].duration_s, Some(600.0));
+        assert_eq!(read.ways[1].duration_s, None);
+        assert_eq!(read.ways[0].name.as_deref(), Some("Ma-13"));
+        assert_eq!(read.nodes, fragment().nodes);
+        for cut in [1, 9, bytes.len() / 2] {
+            std::fs::write(&b, &bytes[..bytes.len() - cut]).unwrap();
+            assert!(read_fragment(&b).is_err(), "{cut}");
+        }
+        let mut wrong = bytes.clone();
+        wrong[8..16].copy_from_slice(&u64::MAX.to_le_bytes());
+        std::fs::write(&b, &wrong).unwrap();
+        assert!(read_fragment(&b).is_err());
+    }
 
     fn graph() -> Graph {
         Graph {

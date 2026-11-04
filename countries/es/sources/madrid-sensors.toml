@@ -12,6 +12,9 @@ license = { name = "CC BY 4.0", attribution = "Ayuntamiento de Madrid, datos abi
 catalog_url = "https://datos.madrid.es/en/dataset/202087-0-trafico-intensidad"
 url = "https://informo.madrid.es/informo/tmadrid/pm.xml"
 
+# What it measures: a scope uses it when it holds one of these regions, or a region that contains one.
+regions = ["ES-M"]
+
 # Poll no faster than the source updates, with conditional requests (`ETag`). A reading older than
 # `ttl_secs` decays towards the historical profile of that edge.
 refresh_secs = 300

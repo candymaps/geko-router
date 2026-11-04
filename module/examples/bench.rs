@@ -77,7 +77,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let t = Instant::now();
-    let file = std::path::Path::new(path).with_file_name("cch.bin");
+    let file = std::path::Path::new(path).parent().and_then(|p| p.parent()).ok_or("the graph is not in <data>/router/graph")?.join("hierarchy/cch.bin");
     let (mut cch, how) = match Cch::read(&file, &turns) {
         Ok(cch) => (cch, "read from the bundle"),
         Err(_) => (Cch::topology(&turns), "worked out"),

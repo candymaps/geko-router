@@ -5,7 +5,8 @@
 #
 # <work dir> is the data directory of a geko with `geko.toml` in it and a bundle published, so that
 # <work dir>/router/graph/graph.bin exists; <dir of the module> holds `router/module.toml` and the
-# library (GEKO_MODULES). The binary of the examples is taken from $CARGO_TARGET_DIR/release/examples.
+# library (GEKO_MODULES). While the country packs are not published, GEKO_ROUTER_PACKS names their
+# folder (`countries/` of this repository). The binary of the examples is taken from $CARGO_TARGET_DIR/release/examples.
 #
 # What makes the comparison fair, each learned the hard way:
 # - geko, OSRM and wrk run in containers on the same network: a container with `--network host` is on

@@ -92,25 +92,132 @@ impl Graph {
     }
 }
 
-struct UsableWay {
-    id: i64,
-    refs: Vec<i64>,
-    speed_kmh: f32,
-    direction: Direction,
-    ferry: bool,
-    duration_s: Option<f32>,
-    name: Option<String>,
+pub(crate) struct UsableWay {
+    pub(crate) id: i64,
+    pub(crate) refs: Vec<i64>,
+    pub(crate) speed_kmh: f32,
+    pub(crate) direction: Direction,
+    pub(crate) ferry: bool,
+    pub(crate) duration_s: Option<f32>,
+    pub(crate) name: Option<String>,
 }
 
-struct RawRestriction {
-    from_way: i64,
-    via_node: i64,
-    to_way: i64,
-    kind: RestrictionKind,
+pub(crate) struct RawRestriction {
+    pub(crate) id: i64,
+    pub(crate) from_way: i64,
+    pub(crate) via_node: i64,
+    pub(crate) to_way: i64,
+    pub(crate) kind: RestrictionKind,
 }
 
+/// A box in degrees.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct GeoBox {
+    pub min_lat: f64,
+    pub min_lon: f64,
+    pub max_lat: f64,
+    pub max_lon: f64,
+}
+
+impl GeoBox {
+    fn holds(&self, lat: f64, lon: f64) -> bool {
+        (self.min_lat..=self.max_lat).contains(&lat) && (self.min_lon..=self.max_lon).contains(&lon)
+    }
+}
+
+/// What a single extract gives: its usable ways, its restrictions and the nodes they use, in an
+/// order that depends only on the extract. It is a stage of its own, so that only the extract that
+/// changed is read again (`graph_io::write_fragment`).
+#[derive(Default)]
+pub struct Fragment {
+    pub(crate) ways: Vec<UsableWay>,
+    pub(crate) restrictions: Vec<RawRestriction>,
+    /// Sorted by id: id, latitude, longitude and whether it has traffic signals.
+    pub(crate) nodes: Vec<(i64, f64, f64, bool)>,
+}
+
+impl Fragment {
+    pub fn ways(&self) -> usize {
+        self.ways.len()
+    }
+
+    pub fn nodes(&self) -> usize {
+        self.nodes.len()
+    }
+}
+
+/// Reads the OSM objects of an extract with the profile of its country, keeping only the nodes
+/// inside `clip`, if it has one: a node left out cuts its way, as one outside the extract does.
 pub struct Builder {
     car: Car,
+    clip: Option<Vec<GeoBox>>,
+    roads: Roads,
+}
+
+impl Builder {
+    pub fn new(car: Car) -> Self {
+        Self::clipped(car, None)
+    }
+
+    pub fn clipped(car: Car, clip: Option<Vec<GeoBox>>) -> Self {
+        Self { car, clip, roads: Roads::default() }
+    }
+
+    /// First pass: ways and relations (nodes are ignored).
+    pub fn first_pass(&mut self, element: &Element) {
+        match element {
+            Element::Way { id, refs, tags } => {
+                let Some(way) = self.car.way(tags) else { return };
+                if refs.len() < 2 {
+                    return;
+                }
+                self.roads.add_way(UsableWay { id: *id, refs: refs.clone(), speed_kmh: way.speed_kmh, direction: way.direction, ferry: way.ferry, duration_s: way.duration_s, name: tag(tags, "name").or_else(|| tag(tags, "ref")).filter(|n| !n.is_empty()).map(str::to_owned) });
+            }
+            Element::Relation { id, members, tags } => {
+                if tag(tags, "type") != Some("restriction") || !self.roads.seen_relations.insert(*id) {
+                    return;
+                }
+                let Some(kind) = tag(tags, "restriction").and_then(restriction_kind) else { return };
+                let member = |role: &str, kind: MemberKind| members.iter().find(|m| m.role == role && m.kind == kind).map(|m| m.id);
+                let (Some(from_way), Some(via_node), Some(to_way)) = (member("from", MemberKind::Way), member("via", MemberKind::Node), member("to", MemberKind::Way)) else {
+                    return;
+                };
+                self.roads.restrictions.push(RawRestriction { id: *id, from_way, via_node, to_way, kind });
+            }
+            Element::Node { .. } => {}
+        }
+    }
+
+    /// Second pass: the nodes the ways use.
+    pub fn second_pass(&mut self, element: &Element) {
+        if let Element::Node { id, lat, lon, tags } = element
+            && self.roads.uses.contains_key(id)
+            && self.clip.as_ref().is_none_or(|boxes| boxes.iter().any(|b| b.holds(*lat, *lon)))
+        {
+            self.roads.coords.insert(*id, (*lat, *lon));
+            if tag(tags, "highway") == Some("traffic_signals") {
+                self.roads.signals.insert(*id);
+            }
+        }
+    }
+
+    pub fn finish(self) -> Graph {
+        self.roads.finish()
+    }
+
+    /// What was read, without what a clip left with no road: ways with fewer than two nodes in it.
+    pub fn fragment(self) -> Fragment {
+        let Roads { mut ways, restrictions, coords, signals, .. } = self.roads;
+        ways.retain(|w| w.refs.iter().filter(|r| coords.contains_key(r)).count() >= 2);
+        let mut nodes: Vec<(i64, f64, f64, bool)> = coords.iter().map(|(id, (lat, lon))| (*id, *lat, *lon, signals.contains(id))).collect();
+        nodes.sort_unstable_by_key(|n| n.0);
+        Fragment { ways, restrictions, nodes }
+    }
+}
+
+/// The roads of one or several extracts, on their way to a graph.
+#[derive(Default)]
+pub struct Roads {
     ways: Vec<UsableWay>,
     restrictions: Vec<RawRestriction>,
     /// How many times each node appears in the usable ways.
@@ -122,56 +229,29 @@ pub struct Builder {
     seen_relations: HashSet<i64>,
 }
 
-impl Builder {
-    pub fn new(car: Car) -> Self {
-        Self {
-            car,
-            ways: Vec::new(),
-            restrictions: Vec::new(),
-            uses: HashMap::new(),
-            coords: HashMap::new(),
-            signals: HashSet::new(),
-            seen_ways: HashSet::new(),
-            seen_relations: HashSet::new(),
+impl Roads {
+    fn add_way(&mut self, way: UsableWay) {
+        if !self.seen_ways.insert(way.id) {
+            return;
         }
+        for node in &way.refs {
+            *self.uses.entry(*node).or_default() += 1;
+        }
+        self.ways.push(way);
     }
 
-    /// First pass: ways and relations (nodes are ignored).
-    pub fn first_pass(&mut self, element: &Element) {
-        match element {
-            Element::Way { id, refs, tags } => {
-                let Some(way) = self.car.way(tags) else { return };
-                if refs.len() < 2 || !self.seen_ways.insert(*id) {
-                    return;
-                }
-                for node in refs {
-                    *self.uses.entry(*node).or_default() += 1;
-                }
-                self.ways.push(UsableWay { id: *id, refs: refs.clone(), speed_kmh: way.speed_kmh, direction: way.direction, ferry: way.ferry, duration_s: way.duration_s, name: tag(tags, "name").or_else(|| tag(tags, "ref")).filter(|n| !n.is_empty()).map(str::to_owned) });
+    /// Joins the roads of an extract to these: what was already there stays as it was.
+    pub fn add(&mut self, fragment: Fragment) {
+        fragment.ways.into_iter().for_each(|way| self.add_way(way));
+        for restriction in fragment.restrictions {
+            if self.seen_relations.insert(restriction.id) {
+                self.restrictions.push(restriction);
             }
-            Element::Relation { id, members, tags } => {
-                if tag(tags, "type") != Some("restriction") || !self.seen_relations.insert(*id) {
-                    return;
-                }
-                let Some(kind) = tag(tags, "restriction").and_then(restriction_kind) else { return };
-                let member = |role: &str, kind: MemberKind| members.iter().find(|m| m.role == role && m.kind == kind).map(|m| m.id);
-                let (Some(from_way), Some(via_node), Some(to_way)) = (member("from", MemberKind::Way), member("via", MemberKind::Node), member("to", MemberKind::Way)) else {
-                    return;
-                };
-                self.restrictions.push(RawRestriction { from_way, via_node, to_way, kind });
-            }
-            Element::Node { .. } => {}
         }
-    }
-
-    /// Second pass: the nodes the ways use.
-    pub fn second_pass(&mut self, element: &Element) {
-        if let Element::Node { id, lat, lon, tags } = element
-            && self.uses.contains_key(id)
-        {
-            self.coords.insert(*id, (*lat, *lon));
-            if tag(tags, "highway") == Some("traffic_signals") {
-                self.signals.insert(*id);
+        for (id, lat, lon, signal) in fragment.nodes {
+            self.coords.insert(id, (lat, lon));
+            if signal {
+                self.signals.insert(id);
             }
         }
     }
@@ -270,6 +350,68 @@ mod tests {
 
     fn node(id: i64, lat: f64, lon: f64) -> Element {
         Element::Node { id, lat, lon, tags: Vec::new() }
+    }
+
+    fn read(mut builder: Builder, elements: &[Element]) -> Builder {
+        elements.iter().for_each(|e| builder.first_pass(e));
+        elements.iter().for_each(|e| builder.second_pass(e));
+        builder
+    }
+
+    /// A road from 1 to 4 along the equator, with a side road at 2.
+    fn roads() -> Vec<Element> {
+        vec![
+            node(1, 0.0, 0.0),
+            node(2, 0.0, 1.0),
+            node(3, 0.0, 2.0),
+            node(4, 0.0, 3.0),
+            node(5, 1.0, 1.0),
+            Element::Way { id: 10, refs: vec![1, 2, 3, 4], tags: tags(&[("highway", "primary")]) },
+            Element::Way { id: 11, refs: vec![2, 5], tags: tags(&[("highway", "residential")]) },
+        ]
+    }
+
+    fn car() -> Car {
+        Car::from_road_classes(CLASSES).unwrap()
+    }
+
+    #[test]
+    fn a_clip_cuts_the_roads_at_its_edge() {
+        let west = GeoBox { min_lat: -0.5, min_lon: -0.5, max_lat: 0.5, max_lon: 2.5 };
+        let graph = read(Builder::clipped(car(), Some(vec![west])), &roads()).finish();
+        let mut ids: Vec<i64> = graph.nodes.iter().map(|n| n.osm_id).collect();
+        ids.sort_unstable();
+        assert_eq!(ids, [1, 2, 3], "the rest is outside");
+        assert!(graph.edges.iter().all(|e| e.way == 10));
+    }
+
+    #[test]
+    fn a_fragment_leaves_out_what_a_clip_left_without_a_road() {
+        let west = GeoBox { min_lat: -0.5, min_lon: -0.5, max_lat: 0.5, max_lon: 2.5 };
+        let fragment = read(Builder::clipped(car(), Some(vec![west])), &roads()).fragment();
+        assert_eq!((fragment.ways(), fragment.nodes()), (1, 3));
+    }
+
+    #[test]
+    fn fragments_joined_are_the_graph_of_the_extracts_read_together() {
+        let (a, b) = (roads(), vec![node(4, 0.0, 3.0), node(6, 0.0, 4.0), Element::Way { id: 12, refs: vec![4, 6], tags: tags(&[("highway", "primary")]) }]);
+        let mut together = Builder::new(car());
+        for extract in [&a, &b] {
+            extract.iter().for_each(|e| together.first_pass(e));
+        }
+        for extract in [&a, &b] {
+            extract.iter().for_each(|e| together.second_pass(e));
+        }
+        let expected = together.finish();
+
+        let mut joined = Roads::default();
+        // The second read of `a` is what two extracts that overlap give: it counts once.
+        for extract in [&a, &b, &a] {
+            joined.add(read(Builder::new(car()), extract).fragment());
+        }
+        let graph = joined.finish();
+        assert_eq!(graph.nodes.iter().map(|n| n.osm_id).collect::<Vec<_>>(), expected.nodes.iter().map(|n| n.osm_id).collect::<Vec<_>>());
+        assert_eq!(graph.edges.iter().map(|e| (e.from, e.to, e.way)).collect::<Vec<_>>(), expected.edges.iter().map(|e| (e.from, e.to, e.way)).collect::<Vec<_>>());
     }
 
     #[test]
