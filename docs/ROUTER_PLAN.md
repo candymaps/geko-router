@@ -210,12 +210,27 @@ Esa RAM de geko era un fallo del índice de calles, ya corregido (punto 1). Cali
 
 Generación del router: 8,3 M de aristas, 14,6 M de giros, 408 s y 3,1 GB de pico. OSRM: `osrm-contract` 333 s. Carga de geko: unos 30 s. En proceso, con un punto por extremo: ruta con CCH 1,9 ms de mediana y Dijkstra 904 ms, sin diferencias en 100 pares. Customización: 12 s con un hilo, 4,2 s con 16.
 
+**Medición de Baleares tras `query_many` (2026-11-04, otro equipo: 12 núcleos y 12 GB, servidores en los núcleos 0-7 y `wrk` en 8-11, un servidor cada vez, 3 rondas):** no es comparable con las tablas anteriores, porque OSRM CH da aquí 5.200–6.000 peticiones/s sin geometría frente a 9.300–9.600 allí.
+
+| | geko | OSRM CH | OSRM MLD |
+|---|---|---|---|
+| Sin geometría, peticiones/s | 8.317–12.606 | 5.241–5.975 | 4.261–4.843 |
+| Sin geometría, p99 | 3,2–5,7 ms | 7,7–11,5 ms | 7,3–9,6 ms |
+| Con geometría, peticiones/s | 4.146–5.569 | 2.014–2.458 | 905–1.982 |
+| Con geometría, p99 | 6,2–18,5 ms | 16,7–31,7 ms | 26,8–63,3 ms |
+| RAM en reposo | 134–146 MB | ~87 MB | ~87 MB |
+| RAM tras la carga | 290–317 MB (717 con geometría) | 98–103 MB | 109–116 MB |
+
+`wrk` marcó 32–128 errores de lectura por ronda en OSRM y 10 y 4 `timeouts` en dos rondas de geko; no se investigó la causa. La primera ronda de geko sin geometría (12.606) y la segunda (8.317) difieren mucho: el orden entre servidores se repite, la cifra exacta no.
+
+**Efecto de `query_many` (misma sesión, Baleares, pares alternos de `9a41f87` y `ad3cec1`):** sin geometría 1,87, 1,54 y 1,51 veces las peticiones/s; con geometría 0,99, 1,41 y 1,19. Mejora en 5 de 6 pares y empate en uno. El equipo se fue cargando durante la prueba (la cifra absoluta del binario nuevo bajó de 7.193 a 3.286 entre rondas), así que vale la razón dentro de cada par, no los valores absolutos. España sigue sin repetirse: `osrm-extract` de España gastó casi toda la memoria de este equipo y se descartó.
+
 ### A. Base sólida y medida
 
 - [x] 1. Reducir la memoria y el tiempo de carga. El índice de calles guardaba los ferris, que llenaban miles de celdas: en Baleares, de 690 a 98 MB y de 4,7 a 0,47 s (`ad302b7`). En España, 3,4 GiB en reposo frente a 3,0 de OSRM.
 - [ ] 2. Pasar a `mmap` el grafo y la jerarquía. Sin empezar: el formato no está alineado y `Graph` usa `Vec`, así que es un cambio grande. Los 30 s de carga de España son el motivo para hacerlo; conviene medir antes qué parte es lectura y qué parte `turn::build` y customización.
 - [x] 3. Añadir mimalloc en la `.so` del módulo (`beeb1b7`). Sin medir su efecto por separado.
-- [ ] 4. Medir España completa contra OSRM. Hecha una primera vez (arriba): los hilos sí ayudan en la customización, y sin geometría geko va 2,5 veces más lento que CH. La causa más clara era una búsqueda por cada combinación de sentidos, hasta 4 por ruta, ya corregida con `query_many`, que además quita un tercio del estado de cada consulta. **Falta repetir la medición** con ese cambio: se paró por falta de memoria del sistema con los tres servidores a la vez (unos 9 GB), sin llegar a dar datos. Conviene repetirla con la máquina libre, o con un servidor cada vez. Si sigue por detrás, probar un orden por disección anidada: el de grado mínimo da 57,8 M de atajos y profundidad 2.115 en España.
+- [ ] 4. Medir España completa contra OSRM. Hecha una primera vez (arriba): los hilos sí ayudan en la customización, y sin geometría geko va 2,5 veces más lento que CH. La causa más clara era una búsqueda por cada combinación de sentidos, hasta 4 por ruta, ya corregida con `query_many`, que además quita un tercio del estado de cada consulta. **Falta repetir la medición de España** con ese cambio (en Baleares, 2026-11-04, `query_many` multiplica las peticiones/s por 1,5 a 1,9 sin geometría en 3 de 3 pares, y por 1,2 a 1,4 con geometría en 2 de 3, con un empate; ver arriba): se paró por falta de memoria del sistema con los tres servidores a la vez (unos 9 GB), sin llegar a dar datos. Conviene repetirla con la máquina libre, o con un servidor cada vez. Si sigue por detrás, probar un orden por disección anidada: el de grado mínimo da 57,8 M de atajos y profundidad 2.115 en España.
 - [ ] 5. Calibrar las duraciones con tiempos reales: salen un 20 % por debajo de OSRM. Causa en `car.lua`: `speed_reduction = 0.8` sobre `maxspeed`, y velocidades por clase más bajas (primary 65 frente a 90, motorway 90 frente a 120). Falta una fuente de tiempos reales para decidir cuál acierta.
 - [ ] 6. Revisar en un mapa los pares con más diferencia de distancia (ratio de 0,59 a 1,60). Con el ejemplo `diff`, las diferencias parecen del modelo de velocidades, sin indicios de fallo, pero no está demostrado. Prueba pendiente: una copia temporal del router con las velocidades de `car.lua` y ver si la diferencia desaparece.
 - [x] 7. Sustituir el ejemplo `load` por `urls` y `ci/ab-osrm.sh`, con `wrk` en igualdad de condiciones.
