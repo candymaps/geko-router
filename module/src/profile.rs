@@ -33,11 +33,19 @@ pub struct Way {
 #[derive(Debug, Deserialize)]
 struct RoadClasses {
     free_flow_kmh: HashMap<String, f32>,
+    /// What an explicit `maxspeed` is multiplied by: nobody drives at the limit all the way.
+    #[serde(default = "no_reduction")]
+    maxspeed_factor: f32,
+}
+
+fn no_reduction() -> f32 {
+    1.0
 }
 
 #[derive(Debug, Clone)]
 pub struct Car {
     free_flow_kmh: HashMap<String, f32>,
+    maxspeed_factor: f32,
 }
 
 impl Car {
@@ -48,7 +56,10 @@ impl Car {
         if let Some((class, speed)) = classes.free_flow_kmh.iter().find(|(_, s)| !(s.is_finite() && **s > 0.0)) {
             return Err(GekoError::Data(format!("road-classes.toml: the speed of `{class}` is {speed}, not a positive number")));
         }
-        Ok(Self { free_flow_kmh: classes.free_flow_kmh })
+        if !(classes.maxspeed_factor.is_finite() && classes.maxspeed_factor > 0.0 && classes.maxspeed_factor <= 1.0) {
+            return Err(GekoError::Data(format!("road-classes.toml: maxspeed_factor is {}, not a number above 0 and up to 1", classes.maxspeed_factor)));
+        }
+        Ok(Self { free_flow_kmh: classes.free_flow_kmh, maxspeed_factor: classes.maxspeed_factor })
     }
 
     /// `None` when a car cannot use the way.
@@ -61,7 +72,7 @@ impl Car {
         if tag(tags, "area") == Some("yes") || !allowed(tags) {
             return None;
         }
-        let speed_kmh = tag(tags, "maxspeed").and_then(maxspeed_kmh).unwrap_or(class_speed);
+        let speed_kmh = tag(tags, "maxspeed").and_then(maxspeed_kmh).map_or(class_speed, |limit| limit * self.maxspeed_factor);
         Some(Way { speed_kmh, direction: direction(tags, highway), ferry: false, duration_s: None })
     }
 }
@@ -180,6 +191,22 @@ mod tests {
         assert_eq!(car().way(&tags(&[("highway", "primary")])).unwrap().speed_kmh, 90.0);
         assert_eq!(car().way(&tags(&[("highway", "primary"), ("maxspeed", "70")])).unwrap().speed_kmh, 70.0);
         assert_eq!(car().way(&tags(&[("highway", "primary"), ("maxspeed", "none")])).unwrap().speed_kmh, 90.0);
+    }
+
+    #[test]
+    fn maxspeed_is_reduced_by_the_factor_of_the_pack() {
+        let car = Car::from_road_classes("maxspeed_factor = 0.8\n[free_flow_kmh]\nprimary = 65\n").unwrap();
+        let speed = |extra: &[(&str, &str)]| {
+            let mut all = vec![("highway", "primary")];
+            all.extend_from_slice(extra);
+            car.way(&tags(&all)).unwrap().speed_kmh
+        };
+        assert_eq!(speed(&[]), 65.0);
+        assert!((speed(&[("maxspeed", "100")]) - 80.0).abs() < 1e-4);
+        assert_eq!(speed(&[("maxspeed", "none")]), 65.0);
+        for bad in ["0", "1.5", "-1"] {
+            assert!(Car::from_road_classes(&format!("maxspeed_factor = {bad}\n[free_flow_kmh]\nprimary = 65\n")).is_err(), "{bad}");
+        }
     }
 
     #[test]
