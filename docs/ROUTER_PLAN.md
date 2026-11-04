@@ -1,6 +1,6 @@
 # Módulo `geko-router`: plan
 
-Estado (2026-11-04, fase A en curso): en desarrollo, en la rama `feature/router-module` de `candymaps/geko-router`, sin publicar. Lo hecho y lo que falta está en «Seguimiento». Las decisiones abiertas están al final.
+Estado (2026-11-04, bloques B y C hechos salvo la publicación real de los packs; medición del punto 4 aplazada): en desarrollo, en la rama `feature/router-module` de `candymaps/geko-router`, sin publicar. Lo hecho y lo que falta está en «Seguimiento». Las decisiones abiertas están al final.
 
 ## Objetivo
 
@@ -29,22 +29,25 @@ Los datos de tráfico dependen del país: cada administración publica en un for
 
 ```
 countries/es/
-├── pack.toml             # país, versión, perfiles por defecto, calendario (festivos), zona horaria
+├── pack.toml             # país, versión, perfiles, zona horaria
 ├── data/
-│   ├── road-classes.toml # equivalencias de clases de vía para velocidades por defecto
-│   ├── calendar.toml     # festivos nacionales y por región (para los perfiles horarios)
-│   └── regions.toml      # particiones del grafo (provincias)
+│   ├── road-classes.toml # velocidades por clase de vía
+│   ├── calendar.toml     # festivos nacionales (para los perfiles horarios)
+│   ├── regions.toml      # regiones que puede nombrar el ámbito
+│   └── region-boxes.tsv  # una caja por partición, para recortar el grafo
 ├── sources/
 │   ├── osm.toml          # extractos de OSM del país (igual que el del geocoder)
 │   ├── madrid-sensors.toml   # tráfico en vivo: sensores de Madrid
-│   └── dgt-datex2.toml       # incidencias y cortes de la DGT
+│   └── dgt-incidents.toml    # incidencias y cortes de la DGT
 ├── golden/               # rutas de referencia con y sin tráfico
 └── tests/
 ```
 
+La guía de los packs (ficheros, de dónde se leen, golden y publicación) está en [countries/README.md](../countries/README.md).
+
 Como en el geocoder, el pack es **datos, no código**: lo que cambia entre países es una declaración TOML (`kind`, URL, licencia, formato, frecuencia, cómo se casa el dato con el grafo). El código genérico vive en proveedores por `kind` (`datex2`, `csv-sensors`, `json-sensors`, `ogc-api`…). Añadir un país o una fuente nueva de un tipo ya conocido **no toca el motor**. Un tipo de fuente nuevo es un proveedor nuevo, y no se extrae un trait hasta que haya una segunda implementación real (regla de abstracción selectiva); los dos primeros tipos, sensores y DATEX II, ya lo son.
 
-Cada declaración de fuente lleva, como la de CartoCiudad, `license = { name, attribution, url }`, que entra en el manifiesto del bundle y en `/v1/attribution`. Cada una se puede anular o desactivar desde `geko-router.toml` (`[sources.<nombre>] enabled = false`). Se publican firmados en `ghcr.io/candymaps/geko-router/countries/<país>` con el mecanismo genérico de `geko-artifact`, con etiqueta `pack-<versión>` y la misma regla de inmutabilidad que los del geocoder.
+Cada declaración de fuente lleva, como la de CartoCiudad, `license = { name, attribution, url }`, que entra en el manifiesto del bundle y en `/v1/attribution`. Cada una se puede anular o desactivar desde `geko-router.toml` (`[sources.<nombre>] enabled = false`). Se publican firmados en `ghcr.io/candymaps/geko-router/countries/<país>` con el mecanismo genérico de `geko-artifact`, con etiqueta `pack-<versión>` y la misma regla de inmutabilidad que los del geocoder. La firma lleva su propio dominio (`geko-router-pack`): un pack del geocoder no pasa por uno del router, aunque compartan la clave.
 
 ### Tres capas de tráfico
 
@@ -108,7 +111,7 @@ La DGT pide `Accept-Encoding: gzip`, o serían unos 10 GB al día. Madrid public
 - **CCH (Customizable Contraction Hierarchies).** La topología (orden de nodos, contracción) se calcula una vez al generar; los pesos se aplican en una fase de **customización** que es rápida y se repite cuando cambia el tráfico. Frente a OSRM: su CH obliga a recontraer con cada cambio de pesos, y su MLD admite pesos nuevos pero consulta más lento; su tráfico es experimental y pide recargar el servidor.
 - Referencia pública (reimplementación de terceros, no medición propia): recustomización completa en el orden de decenas de ms tras un cambio de arista, con consulta como punto flojo conocido. Esto se **mide con el grafo real** (España), no se asume.
 - **Grafo:** con costes por giro y restricciones de giro de OSM desde el principio (modelarlo después obliga a rehacer el grafo). Perfiles en TOML (coche primero; bici, a pie y camión después), sin scripts.
-- **Memoria:** ficheros mapeados (`mmap`), como el índice del geocoder, para arranque inmediato y que la caché de páginas del sistema sea compartida. Particiones por provincia/región con el mismo mecanismo de sellos que el resto.
+- **Memoria:** el grafo y la jerarquía se leen enteros. El `mmap` se descartó por medición (punto 2): la lectura es el 10 % de la carga. Un ámbito de provincias recorta el grafo a sus cajas (punto 17).
 - **Asignador:** mimalloc declarado en la `.so` del módulo (ver MODULES_PLAN.md, «Asignador»).
 
 ## API (`/router/v1/…`)
@@ -117,40 +120,50 @@ Fase 1: `route` (con alternativas y pasos), `nearest`, `table` (matriz muchos-a-
 
 Parámetros de tráfico: `traffic=none|historical|live` y `depart_at` (RFC 3339) para ruta futura con perfil histórico. Por defecto, `live` si hay dato; la respuesta lleva `traffic.coverage`.
 
-Formato: propio y documentado (ver decisiones abiertas).
+Formato: propio y documentado en `openapi.yaml`, sin capa de compatibilidad con OSRM (punto 8).
 
 ## Configuración (`geko-router.toml`)
 
 ```toml
+[osm]
+mirror = "auto"             # Geofabrik, o la URL de un espejo con su estructura
+
 [packs]
 registry = "ghcr.io/candymaps/geko-router/countries"
 
 [profiles]
-default = "car"
+default = "car"             # el único que hay; entra en los sellos
 
 [traffic]
-enabled = true
-live = true
+enabled = false             # desactivado por defecto
+live = true                 # con enabled, leer las fuentes en vivo
 
 [sources.madrid-sensors]    # cualquier clave de countries/es/sources/madrid-sensors.toml
 enabled = true
 
 [serve]
-countries = []
-preload = true
+preload = true              # false: cargar el grafo con la primera petición que lo necesite
 ```
 
-Las opciones que cambian lo generado (fuentes, perfiles) entran en los sellos de las etapas. Una opción desconocida es un error que nombra el fichero y la clave, como en el geocoder.
+Sustituye a `[traffic.madrid]`, `interval_secs` y `max_age_secs`: la cadencia y la caducidad son `refresh_secs` y `ttl_secs` de cada fuente, en su pack, y se pueden cambiar en `[sources.<nombre>]`.
+
+- `[sources.<nombre>]` solo admite claves que existan en el fichero de la fuente, y nombrar una fuente que ningún pack del ámbito tiene es un error. Se comprueba con los packs a mano, en `prepare`.
+- `[serve] countries`, que estaba en este plan, **se descartó** (2026-11-04): hay un único grafo para todo el ámbito, porque una ruta cruza fronteras, y `[[scope]]` ya dice qué países se sirven.
+- Con `preload = false`, las rutas de `v1/route`, `v1/nearest` y `v1/table` disparan la carga y esperan a que acabe. `v1/status` responde 503 hasta entonces, porque no corre en el pool y no debe bloquearse.
+
+Las opciones que cambian lo generado (perfil, velocidades del pack, recorte) entran en los sellos de las etapas. Una opción desconocida es un error que nombra el fichero y la clave, como en el geocoder.
 
 ## Bundle y generación
 
-Etapas por país con sellos de entrada (hash de código y de entradas, como PROJECT.md §8), deterministas:
+Etapas con sellos de entrada (hash de código y de entradas, como PROJECT.md §8), deterministas:
 
-1. Lectura de OSM y construcción del grafo con giros y restricciones.
-2. Orden de nodos y contracción (CCH): lo caro, se hace una vez.
-3. Casado de los puntos de medida de las fuentes de tráfico del pack con aristas.
-4. Perfiles históricos (si hay mediciones descargables).
-5. Índice espacial para `nearest` y snapping (R-tree de Hilbert, como la inversa del geocoder).
+1. **Fragmento de cada extracto** (`router/fragments/<extracto>/`): sus vías, restricciones y nodos, con el perfil de su país y recortado a las regiones del ámbito. No va al bundle.
+2. **Grafo** (`router/graph/`): la unión de los fragmentos, con giros y restricciones. Su sello depende del contenido de los fragmentos.
+3. **Jerarquía** (`router/hierarchy/`): orden de nodos y contracción (CCH). Es lo caro, y su sello depende del contenido del grafo, así que un grafo que sale igual no la repite.
+
+Las pendientes, con el bloque D: casado de los puntos de medida con aristas (punto 22) y perfiles históricos (punto 24).
+
+El índice espacial se construye al cargar, con una rejilla: el R-tree de Hilbert se descartó por medición (punto 11).
 
 El tráfico en vivo **no** va en el bundle, que es inmutable: se lee en servicio y vive en memoria.
 
@@ -182,7 +195,7 @@ Cada paso deja resultados verificables antes del siguiente.
 
 Lista de trabajo, en el orden previsto. Al cerrar un punto se marca aquí, con su commit o su medición. Los marcados con **[decisión]** o **[gestión]** dependen del propietario del proyecto.
 
-**Hecho (2026-11-04):** grafo con giros, restricciones y ferris; CCH con customización en caliente; `v1/route`, `v1/nearest`, `v1/table` (una consulta por celda, 100×100 como máximo) y `v1/status`; tráfico en vivo de los sensores de Madrid, opcional y desactivado por defecto, con `traffic.coverage`.
+**Hecho (2026-11-04):** grafo con giros, restricciones y ferris; CCH con customización en caliente; `v1/route` con pasos y alternativas, `v1/nearest`, `v1/table` (etiquetas muchos-a-muchos, 1.000.000 de celdas como máximo) y `v1/status`; `openapi.yaml` y demo; packs `es` y `lu` leídos en tiempo de ejecución, con etapas por extracto; tráfico en vivo de los sensores de Madrid, opcional y desactivado por defecto, con `traffic.coverage`.
 
 **Primera medición contra OSRM (2026-11-03, Baleares, OSRM v26.11.0, una sola máquina):** geko, OSRM y `wrk` en contenedores con la misma red, servidores en 8 núcleos, 16 conexiones con keep-alive, mismas URLs y rondas alternas. Se descarta una ronda de OSRM CH que duró 9,66 min, probablemente por una suspensión del equipo.
 
@@ -230,7 +243,7 @@ Generación del router: 8,3 M de aristas, 14,6 M de giros, 408 s y 3,1 GB de pic
 - [x] 1. Reducir la memoria y el tiempo de carga. El índice de calles guardaba los ferris, que llenaban miles de celdas: en Baleares, de 690 a 98 MB y de 4,7 a 0,47 s (`ad302b7`). En España, 3,4 GiB en reposo frente a 3,0 de OSRM.
 - [x] 2. Pasar a `mmap` el grafo y la jerarquía: **descartado por medición** (2026-11-04). La lectura es el 10 % de la carga de España (~2 s de ~20) y lo que pesaba era el cálculo, que se recortó en `Snapper` (`b6a262c`); el `mmap` queda como idea si algún día importa compartir la caché de páginas entre procesos. Lo que había: sin empezar: el formato no está alineado y `Graph` usa `Vec`, así que es un cambio grande. Los 30 s de carga de España son el motivo para hacerlo. Medido el 2026-11-04 en otro equipo (12 núcleos, WSL), con temporizadores en una copia y el equipo en reposo, la carga de España en `geko serve` tarda 20,3 s: `graph_io::read` 0,9 s; `turn::build` 2,3 s; `scc` y `Snapper` 8,1 s; `Cch::read` 1,1 s; `customize` 7,8 s (de ellos, `Lower::new` 1,4 s). Un banco en proceso, con el mínimo de 3 repeticiones, da lo mismo (unos 16 s: 0,3–0,5; 1,9; 7,0–9,4; 0,55; 5,5–7,2). La lectura es solo el 10 % de la carga, así que el `mmap` ahorra a lo sumo 2 s de 20, y lo que pesa es el cálculo: `scc`/`Snapper` y `customize`, casi el 80 %. Un primer intento, con el equipo ocupado, daba 42–75 s y hacía parecer que la lectura era la mitad: era ruido, y la comparación del lector nuevo con el antiguo no mostró diferencia medible (0,48 s frente a 0,48–0,54 s). Mirar antes el cálculo, y repetir siempre con el equipo en reposo. Dentro del cálculo, `scc` son solo 0,56 s y `Snapper::new` 6,8 s (0,9 s `by_shape` y 6,0 s las celdas: 26,7 M de inserciones en 2,4 M de celdas). Recorrer las formas en el orden del grafo, y no en el del `HashMap`, lo deja en 5,0 s; repartir las celdas en 16 bandas de filas, cada una en su hilo, en 2,4 s. Un hasher rápido por sí solo no ayudó (7,1 s). Efecto lateral: el índice es ahora determinista. Con el `HashMap` de semilla aleatoria, ante dos calles equidistantes en un cruce, dos arranques seguidos daban resultados distintos en 118 de 400 rutas de Baleares (distinta `duration_s` por el coste de giro de la arista elegida); con el índice nuevo, 0 de 400. Arranque de Baleares: 0,37–0,92 s antes y 0,30–0,47 s ahora. Pendiente medir el arranque completo de España con la versión nueva.
 - [x] 3. Añadir mimalloc en la `.so` del módulo (`beeb1b7`). Sin medir su efecto por separado.
-- [ ] 4. Medir España completa contra OSRM. Hecha una primera vez (arriba): los hilos sí ayudan en la customización, y sin geometría geko va 2,5 veces más lento que CH. La causa más clara era una búsqueda por cada combinación de sentidos, hasta 4 por ruta, ya corregida con `query_many`, que además quita un tercio del estado de cada consulta. **Falta repetir la medición de España** con ese cambio (en Baleares, 2026-11-04, `query_many` multiplica las peticiones/s por 1,5 a 1,9 sin geometría en 3 de 3 pares, y por 1,2 a 1,4 con geometría en 2 de 3, con un empate; ver arriba): se paró por falta de memoria del sistema con los tres servidores a la vez (unos 9 GB), sin llegar a dar datos. Conviene repetirla con la máquina libre, o con un servidor cada vez. Si sigue por detrás, probar un orden por disección anidada: el de grado mínimo da 57,8 M de atajos y profundidad 2.115 en España.
+- [ ] 4. **Aplazado por decisión del propietario (2026-11-04).** Medir España completa contra OSRM. Hecha una primera vez (arriba): los hilos sí ayudan en la customización, y sin geometría geko va 2,5 veces más lento que CH. La causa más clara era una búsqueda por cada combinación de sentidos, hasta 4 por ruta, ya corregida con `query_many`, que además quita un tercio del estado de cada consulta. **Falta repetir la medición de España** con ese cambio (en Baleares, 2026-11-04, `query_many` multiplica las peticiones/s por 1,5 a 1,9 sin geometría en 3 de 3 pares, y por 1,2 a 1,4 con geometría en 2 de 3, con un empate; ver arriba): se paró por falta de memoria del sistema con los tres servidores a la vez (unos 9 GB), sin llegar a dar datos. Conviene repetirla con la máquina libre, o con un servidor cada vez. Si sigue por detrás, probar un orden por disección anidada: el de grado mínimo da 57,8 M de atajos y profundidad 2.115 en España.
 - [x] 5. Calibrar las duraciones: alineadas con `car.lua` de OSRM (2026-11-04). El pack lleva ahora sus velocidades por clase (motorway 90, primary 65, residential 25…) y `maxspeed_factor = 0,8` sobre `maxspeed`, que sustituye a la de la clase. En Baleares, 1.000 pares contra OSRM CH: duración con mediana 0,878 → 0,996 (p5–p95 de 0,714–0,978 a 0,969–1,024) y distancia a menos del 2 % del 88,6 % al 94,5 %. Sigue siendo una referencia, no tiempos reales: si se consiguen (trazas GPS), se recalibra.
 - [x] 6. Revisar los pares con más diferencia de distancia (2026-11-04). Con las velocidades de `car.lua` (punto 5) el peor ratio pasa de 0,667 a 0,797 por abajo y llega a 1,203 por arriba: la diferencia grande era del modelo de velocidades. Lo que queda (el 5,5 % de pares a más del 2 %) se mira con `diff` en los dos peores y es del objetivo: OSRM minimiza un peso (penaliza `service`, `side_road` y giros) y nosotros la duración, así que en un par elegimos una vía rápida más larga (49,8 km, 3.002 s frente a 41,4 km, 2.772 s de OSRM) y en otro una más corta (4,1 km frente a 5,2 km). No hay indicios de fallo. No se vio en un mapa: se comparó con `diff` en texto. Para comparar con justicia habría que pedir a OSRM la duración de nuestra ruta.
 - [x] 7. Sustituir el ejemplo `load` por `urls` y `ci/ab-osrm.sh`, con `wrk` en igualdad de condiciones.
@@ -264,18 +277,37 @@ Generación del router: 8,3 M de aristas, 14,6 M de giros, 408 s y 3,1 GB de pic
 
 ### C. Packs de país
 
-- [ ] 13. Cargador de packs: hoy `countries/es/` no se lee y `road-classes` va incrustado.
-- [ ] 14. Opciones del plan en `geko-router.toml`: `[packs]`, `[profiles]`, `[serve]` y `[sources.<nombre>]`.
-- [ ] 15. Completar el pack `es`: `regions.toml`, golden y tests.
-- [ ] 16. Pack `lu`.
-- [ ] 17. Particiones por provincia con sellos.
-- [ ] 18. Publicación firmada de los packs en ghcr.
+Comprobado el 2026-11-04 con el binario de `geko` y la `.so` del módulo (Madrid y Luxemburgo en un ámbito): sin packs falla con «not published, or not public»; con `GEKO_ROUTER_PACKS`, `plan`, `build` y `serve` funcionan, y responde rutas de los dos países desde un solo grafo.
+
+- [x] 13. Cargador de packs (`module/src/pack.rs`).
+  - Lee `pack.toml`, `data/` y `sources/` en tiempo de ejecución y valida cada fichero, nombrándolo en el error. `countries.toml` y `road-classes.toml` ya no van incrustados.
+  - Baja los del ámbito en `prepare` con `geko-artifact` a `<datos>/router/packs/<país>/`; `geko purge packages` borra los de fuera del ámbito. Una copia a mano se respeta, y `GEKO_ROUTER_PACKS` lee de una carpeta sin descargar.
+  - Un país sin pack es un error, como en el geocoder. Antes se podía generar cualquier país con las velocidades incrustadas.
+  - Cada extracto se lee con el perfil de su país, así que un ámbito de varios países usa las velocidades de cada uno.
+  - `geko serve` lee los packs para las fuentes de tráfico y no los baja: si faltan, avisa y sirve sin tráfico. El bundle guarda sus versiones en `meta.packs`.
+- [x] 14. Opciones en `geko-router.toml`: `[packs] registry`, `[profiles] default`, `[traffic] live`, `[sources.<nombre>]` y `[serve] preload`. Detalle en «Configuración». `[serve] countries` se descartó, y `[traffic.madrid]`, `interval_secs` y `max_age_secs` desaparecen sin compatibilidad, porque el módulo no está publicado.
+- [x] 15. Pack `es` completo: `regions.toml`, `region-boxes.tsv` (copiados del geocoder), `tests/pack.rs` y golden.
+  - Golden (`ci/golden.sh`): 200 rutas en `es` (100 de Baleares y 100 de Madrid con una lectura congelada del feed), cada una con su duración y distancia. Dos pasadas dan 0 diferencias. En Madrid, 13 de 100 rutas se alargan con tráfico: el feed se congeló a las 23:29, sin apenas retenciones.
+  - **Lo que no prueba:** los números son los que da hoy el router, así que detectan cambios, no aciertos. Solo las 9 rutas escritas a mano llevan un rango (`expect_km`), y es una estimación mía, no una medición en un mapa: amplié a 30–50 km el de Móstoles–Alcobendas al dar 47,3 km por la M-50. No se han comparado con OSRM, porque esta máquina no tiene Docker.
+  - Los datos congelados (`golden/snapshot`) están solo en `/var/lib/geko/golden/router` de esta máquina, sin publicar: otra máquina no puede pasar el golden. `ci/golden.sh` no corre en CI (punto 33).
+- [x] 16. Pack `lu`: solo OSM, con su calendario de festivos, una partición y 100 rutas de golden (4 a mano). El extracto sale del índice de Geofabrik, sin `osm.toml`. Las velocidades son una copia de las de `es`.
+- [x] 17. Particiones con sellos, **adaptado** (2026-11-04): por extracto, no por provincia.
+  - La CCH es global, porque una ruta cruza provincias, y un PBF nuevo de España cambia todas las provincias a la vez: un sello por provincia no ahorraría nada con el país entero.
+  - Etapas: un fragmento por extracto, el grafo y la jerarquía, cada una con su sello. Con todo sellado, Baleares y Luxemburgo tardan 2 ms; al cambiar las velocidades de `lu`, solo se relee Luxemburgo (4,3 s frente a 24 s con la descarga).
+  - Un ámbito de provincias recorta a sus cajas: Málaga (`ES-MA`) da 138.175 nodos, frente a 597.010 de Andalucía (`ES-AN`), y 2 regiones del mismo extracto comparten una lectura.
+  - España completa, sin cambios en el grafo: 3.793.285 nodos, 8.287.395 aristas y 14.590.189 giros, los mismos que antes de los fragmentos. Tarda 253 s, con pico de 3,2 GB (fragmento de `spain` 151 s, grafo 37 s, jerarquía 61 s). La cifra anterior (408 s, 3,1 GB) es de otra sesión, así que no prueba una mejora de tiempo. Los fragmentos son trabajo en disco, no van al bundle.
+  - Una caja es un rectángulo: incluye algo de las provincias vecinas, y una vía se corta en su borde.
+- [ ] 18. Publicación firmada de los packs en ghcr. **Preparada, sin publicar.**
+  - Hecho: `ci/packs.sh`, `ci/oras.sh`, el binario `geko-router-pack-sign` y `.github/workflows/publish.yml`, en cada push a `main`. La firma con dominio propio tiene test, y `GEKO_PACKS_DRY_RUN=1` firma los dos packs con una clave de prueba.
+  - Sin probar: la subida a un registro. El workflow no se ha ejecutado nunca.
+  - Falta: fusionar a `main` (punto 37), con los secretos `GEKO_PACK_SIGNING_KEY` y `GEKO_HOST_TOKEN` en el repositorio, y hacer públicos los paquetes en ghcr. Esta máquina no tiene la clave ni `gh`, así que no se pudo comprobar si los secretos existen.
+  - **Mientras tanto, `geko` solo funciona con `GEKO_ROUTER_PACKS` o una copia a mano** (`ci/packs.sh <datos>/router/packs`).
 
 ### D. Tráfico completo
 
-- [ ] 19. Probar la capa en vivo con el feed real de Madrid, de punta a punta.
+- [ ] 19. Probar la capa en vivo con el feed real de Madrid, de punta a punta. Prueba de humo el 2026-11-04, con `geko serve` y el feed real: 1.248 aristas medidas, 127 lentas y una ruta del centro que pasa de 695 a 711 s. Queda abierto: no se ha comprobado el casado sensor a sensor ni el comportamiento en horas punta.
 - [ ] 20. Calibrar la conversión de nivel de servicio a velocidad (valores provisionales).
-- [ ] 21. Proveedores genéricos por `kind`, con Madrid movido al pack.
+- [ ] 21. Proveedores genéricos por `kind`. La URL, la cadencia, la caducidad, la licencia y lo que cubre Madrid ya salen del pack; falta que `madrid.rs` lea del pack las etiquetas y los factores de nivel de servicio, que siguen en el código.
 - [ ] 22. Casar los sensores al generar el bundle, no en servicio.
 - [ ] 23. Combinar varias fuentes: hoy hay un único poller y cada lectura sustituye a la anterior.
 - [ ] 24. Perfil histórico: mediciones, velocidad por hora y día, calendario de festivos, y decaimiento hacia el histórico en vez de a velocidad libre. Como mete datos de Madrid (CC BY) en el bundle junto al grafo de OSM (ODbL), hay que declarar en el manifiesto qué lleva cada licencia. El código sigue siendo AGPL; hoy no hay mezcla, porque el tráfico en vivo no va en el bundle.
@@ -315,6 +347,5 @@ Generación del router: 8,3 M de aristas, 14,6 M de giros, 408 s y 3,1 GB de pic
 ## Decisiones abiertas
 
 - **Alcance de la v1:** solo coche, `route`/`table`, sin tráfico (recomendado: la base medida primero).
-- **Formato de la API:** propio, o compatible con OSRM para poder sustituirlo sin tocar clientes (el host eliminó antes los modos Pelias y Photon; ahí se optó por no mantener formatos ajenos).
 - **Primer país con tráfico:** Madrid (CC BY 4.0, sensores, el dato más claro) frente a la DGT (cobertura estatal, solo incidencias, licencia por confirmar).
-- **Calendario por país:** si los festivos entran en el pack (`calendar.toml`) o se toman de una fuente genérica.
+- **Calendario por país:** los festivos nacionales están en `calendar.toml`; queda por decidir de dónde salen los regionales y locales.
