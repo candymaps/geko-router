@@ -135,6 +135,19 @@ struct Candidate<'a> {
 /// hierarchy. Its queries do not search the graph, they walk the elimination tree. `edges` is
 /// only filled in when `with_path`: finding the path costs about as much as finding its length.
 fn cch_best<'a>(turns: &TurnGraph, cch: &Cch, scratch: &mut Scratch, from: &'a [Snap], to: &'a [Snap], with_path: bool) -> Option<Candidate<'a>> {
+    // Points on different edges, nearly every route: one search for all their directions. What a
+    // start leaves behind is taken off, and a search adds only, so all of them start from `base`.
+    if from.iter().all(|f| to.iter().all(|t| f.edge != t.edge)) {
+        let behind = |f: &Snap| part(f.fraction, turns.edge_ds[f.edge as usize]);
+        let base = from.iter().map(behind).max()?;
+        let sources: Vec<(u32, u32)> = from.iter().map(|f| (f.edge, (base - behind(f)) as u32)).collect();
+        let targets: Vec<(u32, u32)> = to.iter().map(|t| (t.edge, part(t.fraction, turns.edge_ds[t.edge as usize]) as u32)).collect();
+        let (length, meet) = cch.query_many(scratch, &sources, &targets)?;
+        let edges = if with_path { cch.path(scratch, meet) } else { Vec::new() };
+        let start = from.iter().find(|f| edges.first() == Some(&f.edge)).unwrap_or(&from[0]);
+        let end = to.iter().find(|t| edges.last() == Some(&t.edge)).unwrap_or(to.first()?);
+        return Some(Candidate { total: length as i64 - base, from: start, to: end, edges });
+    }
     let mut best: Option<Candidate<'a>> = None;
     for f in from {
         // The part of its edge that a path already has behind it, and the part of the last one before the point.
@@ -155,7 +168,7 @@ fn cch_best<'a>(turns: &TurnGraph, cch: &Cch, scratch: &mut Scratch, from: &'a [
                 if best.as_ref().is_none_or(|b| total < b.total) {
                     let mut edges = Vec::new();
                     if with_path {
-                        edges = cch.path(scratch, head, meet);
+                        edges = cch.path(scratch, meet);
                         if head != f.edge {
                             edges.insert(0, f.edge);
                         }

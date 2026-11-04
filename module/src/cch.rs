@@ -131,19 +131,19 @@ impl Lower {
 /// What a query leaves for the next, per thread: the distances of the nodes it touched, stamped so
 /// that none has to be cleared.
 pub struct Scratch {
-    stamp: u32,
-    forward_stamp: Vec<u32>,
-    backward_stamp: Vec<u32>,
+    /// `INF` where the last query did not reach.
     forward: Vec<u32>,
     backward: Vec<u32>,
     forward_pred: Vec<u32>,
     backward_pred: Vec<u32>,
+    /// What the last query touched, to clean before the next.
+    touched: Vec<u32>,
 }
 
 impl Scratch {
     pub fn new(cch: &Cch) -> Self {
         let n = cch.rank.len();
-        Self { stamp: 0, forward_stamp: vec![0; n], backward_stamp: vec![0; n], forward: vec![0; n], backward: vec![0; n], forward_pred: vec![NONE; n], backward_pred: vec![NONE; n] }
+        Self { forward: vec![INF; n], backward: vec![INF; n], forward_pred: vec![NONE; n], backward_pred: vec![NONE; n], touched: Vec::new() }
     }
 }
 
@@ -389,79 +389,90 @@ impl Cch {
     /// The length of the shortest path from node `from` to node `to` of the turn graph, in the weights
     /// of its arcs, and the rank of the node where the two searches met.
     pub fn query(&self, scratch: &mut Scratch, from: u32, to: u32) -> Option<(u32, u32)> {
-        let (s, t) = (self.rank[from as usize], self.rank[to as usize]);
-        if s == t {
-            scratch.forward_pred[s as usize] = NONE;
-            scratch.backward_pred[s as usize] = NONE;
-            return Some((0, s));
-        }
-        scratch.stamp = scratch.stamp.wrapping_add(1);
-        if scratch.stamp == 0 {
-            scratch.forward_stamp.fill(0);
-            scratch.backward_stamp.fill(0);
-            scratch.stamp = 1;
-        }
-        let stamp = scratch.stamp;
-        scratch.forward_stamp[s as usize] = stamp;
-        scratch.forward[s as usize] = 0;
-        scratch.forward_pred[s as usize] = NONE;
-        scratch.backward_stamp[t as usize] = stamp;
-        scratch.backward[t as usize] = 0;
-        scratch.backward_pred[t as usize] = NONE;
+        self.query_many(scratch, &[(from, 0)], &[(to, 0)])
+    }
 
-        let (mut a, mut b) = (s, t);
+    /// The shortest of the paths from any of `sources` to any of `targets`, each a node of the turn
+    /// graph and what starting or ending there adds to the length, and where the searches met. It is
+    /// one walk up the elimination tree however many there are, which is why a point on a street,
+    /// with its two directions, costs one search and not four.
+    pub fn query_many(&self, scratch: &mut Scratch, sources: &[(u32, u32)], targets: &[(u32, u32)]) -> Option<(u32, u32)> {
+        // A search only reaches ancestors, all of which the walk visits: those are what to clean.
+        for v in scratch.touched.drain(..) {
+            scratch.forward[v as usize] = INF;
+            scratch.backward[v as usize] = INF;
+        }
+        let mut forward_at = Vec::with_capacity(sources.len());
+        for (node, extra) in sources {
+            let s = self.rank[*node as usize];
+            if *extra < scratch.forward[s as usize] {
+                scratch.forward[s as usize] = *extra;
+                scratch.forward_pred[s as usize] = NONE;
+            }
+            forward_at.push(s);
+        }
+        let mut backward_at = Vec::with_capacity(targets.len());
+        for (node, extra) in targets {
+            let t = self.rank[*node as usize];
+            if *extra < scratch.backward[t as usize] {
+                scratch.backward[t as usize] = *extra;
+                scratch.backward_pred[t as usize] = NONE;
+            }
+            backward_at.push(t);
+        }
+
         let (mut best, mut meet) = (INF, NONE);
-        while a != NONE || b != NONE {
-            let v = a.min(b);
+        loop {
+            let v = forward_at.iter().chain(&backward_at).copied().min().unwrap_or(NONE);
+            if v == NONE {
+                break;
+            }
             let vi = v as usize;
-            let reached_forward = scratch.forward_stamp[vi] == stamp;
-            let reached_backward = scratch.backward_stamp[vi] == stamp;
-            if reached_forward && reached_backward && scratch.forward[vi] + scratch.backward[vi] < best {
-                best = scratch.forward[vi] + scratch.backward[vi];
+            scratch.touched.push(v);
+            let (forward, backward) = (scratch.forward[vi], scratch.backward[vi]);
+            if forward < INF && backward < INF && forward + backward < best {
+                best = forward + backward;
                 meet = v;
             }
             let (start, end) = (self.first_up[vi] as usize, self.first_up[vi + 1] as usize);
-            if a == v && reached_forward && scratch.forward[vi] < best {
+            if forward < best {
                 for e in start..end {
                     let weight = self.forward[e];
                     if weight >= INF {
                         continue;
                     }
-                    let (u, d) = (self.up[e] as usize, scratch.forward[vi] + weight);
-                    if scratch.forward_stamp[u] != stamp || d < scratch.forward[u] {
-                        scratch.forward_stamp[u] = stamp;
+                    let (u, d) = (self.up[e] as usize, forward + weight);
+                    if d < scratch.forward[u] {
                         scratch.forward[u] = d;
                         scratch.forward_pred[u] = v;
                     }
                 }
             }
-            if b == v && reached_backward && scratch.backward[vi] < best {
+            if backward < best {
                 for e in start..end {
                     let weight = self.backward[e];
                     if weight >= INF {
                         continue;
                     }
-                    let (u, d) = (self.up[e] as usize, scratch.backward[vi] + weight);
-                    if scratch.backward_stamp[u] != stamp || d < scratch.backward[u] {
-                        scratch.backward_stamp[u] = stamp;
+                    let (u, d) = (self.up[e] as usize, backward + weight);
+                    if d < scratch.backward[u] {
                         scratch.backward[u] = d;
                         scratch.backward_pred[u] = v;
                     }
                 }
             }
-            if a == v {
-                a = self.parent[vi];
-            }
-            if b == v {
-                b = self.parent[vi];
+            for at in forward_at.iter_mut().chain(&mut backward_at) {
+                if *at == v {
+                    *at = self.parent[vi];
+                }
             }
         }
         (best < INF).then_some((best, meet))
     }
 
-    /// The nodes of the turn graph along the path the last `query` found, from `from` to `to`.
-    pub fn path(&self, scratch: &Scratch, from: u32, meet: u32) -> Vec<u32> {
-        let mut ranks = vec![self.rank[from as usize]];
+    /// The nodes of the turn graph along the path the last query found, which met at `meet`, from its
+    /// source to its target.
+    pub fn path(&self, scratch: &Scratch, meet: u32) -> Vec<u32> {
         let mut climb = Vec::new();
         let mut x = meet;
         while x != NONE {
@@ -469,6 +480,7 @@ impl Cch {
             x = scratch.forward_pred[x as usize];
         }
         climb.reverse();
+        let mut ranks = vec![climb[0]];
         for pair in climb.windows(2) {
             self.unpack(pair[0], pair[1], &mut ranks);
         }
@@ -650,7 +662,7 @@ mod tests {
                 }
                 let (distance, meet) = got.unwrap_or_else(|| panic!("{from} -> {to} has a path"));
                 assert_eq!(distance, expected[to as usize], "{from} -> {to}");
-                let path = cch.path(&scratch, from, meet);
+                let path = cch.path(&scratch, meet);
                 assert_eq!((path.first(), path.last()), (Some(&from), Some(&to)));
                 let length: u32 = path
                     .windows(2)
@@ -666,6 +678,36 @@ mod tests {
         for (n, arcs, seed) in [(60, 1, 1), (120, 2, 7), (150, 3, 42), (200, 2, 99)] {
             let graph = random_graph(n, arcs, &mut Random(0x9E37_79B9_7F4A_7C15 ^ seed));
             check(&graph, &Cch::new(&graph));
+        }
+    }
+
+    #[test]
+    fn many_sources_and_targets_are_the_best_of_every_pair() {
+        let mut random = Random(777);
+        let graph = random_graph(150, 2, &mut random);
+        let cch = Cch::new(&graph);
+        let mut scratch = Scratch::new(&cch);
+        for _ in 0..500 {
+            let mut pick = || (random.next(150) as u32, random.next(40) as u32);
+            let (sources, targets) = ([pick(), pick()], [pick(), pick()]);
+            let mut expected = None;
+            for (s, extra_s) in sources {
+                for (t, extra_t) in targets {
+                    if let Some((d, _)) = cch.query(&mut scratch, s, t) {
+                        let total = d + extra_s + extra_t;
+                        expected = Some(expected.map_or(total, |e: u32| e.min(total)));
+                    }
+                }
+            }
+            let found = cch.query_many(&mut scratch, &sources, &targets);
+            assert_eq!(found.map(|f| f.0), expected, "{sources:?} {targets:?}");
+            if let Some((length, meet)) = found {
+                let path = cch.path(&scratch, meet);
+                let (start, end) = (path[0], path[path.len() - 1]);
+                let extra = |list: &[(u32, u32)], node| list.iter().filter(|(n, _)| *n == node).map(|(_, e)| *e).min();
+                let (from, to) = (extra(&sources, start).expect("it starts at a source"), extra(&targets, end).expect("it ends at a target"));
+                assert_eq!(cch.query(&mut scratch, start, end).unwrap().0 + from + to, length);
+            }
         }
     }
 
@@ -696,7 +738,7 @@ mod tests {
         assert_eq!(cch.query(&mut scratch, 0, 2), None);
         let (zero, meet) = cch.query(&mut scratch, 2, 2).unwrap();
         assert_eq!(zero, 0);
-        assert_eq!(cch.path(&scratch, 2, meet), vec![2]);
+        assert_eq!(cch.path(&scratch, meet), vec![2]);
     }
 
     #[test]
