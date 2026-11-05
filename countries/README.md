@@ -16,8 +16,6 @@ Todo lo propio de un país vive en su pack, `countries/<país>/`: las velocidade
 - `GEKO_ROUTER_PACKS=<carpeta>` lee los packs de esa carpeta y no descarga nada. Con `GEKO_ROUTER_PACKS=countries` se usan los del repositorio.
 - Con `[data] offline`, solo vale la copia que haya en disco.
 
-**Mientras los packs no estén publicados** (punto 18 del plan), hay que usar una de las dos últimas formas: si no, `geko` falla con «not published, or not public».
-
 ## Ficheros
 
 ```
@@ -70,7 +68,7 @@ Para añadir el crate de pruebas de un país nuevo, declara su `[[test]]` en `mo
 
 ## Publicar
 
-`ci/packs.sh publish` firma cada pack con `GEKO_PACK_SIGNING_KEY` (la clave del resto de artefactos de geko) y sube los que han cambiado. Lo hace `.github/workflows/publish.yml` en cada push a `main`, y necesita los secretos `GEKO_PACK_SIGNING_KEY` y `GEKO_HOST_TOKEN` en el repositorio.
+`ci/packs.sh publish` firma cada pack con `GEKO_PACK_SIGNING_KEY` (la clave del resto de artefactos de geko) y sube los que han cambiado. Lo hace `.github/workflows/publish.yml` en cada push a `main`, y necesita el secreto `GEKO_PACK_SIGNING_KEY` en el repositorio, y `GEKO_HOST_TOKEN` si el repositorio del host es privado.
 
 La firma va con su propio dominio (`geko-router-pack`), así que un pack del geocoder nunca pasa por uno del router. La primera vez, el paquete de cada país nace privado en ghcr.io: hay que hacerlo público en «Package settings», o nadie podrá bajarlo.
 
