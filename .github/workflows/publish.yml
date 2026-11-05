@@ -9,7 +9,8 @@ name: publish
 
 on:
   push:
-    branches: [main]
+    # feature/router-module: temporary, for the first publication of the packs (point 18).
+    branches: [main, feature/router-module]
 
 concurrency:
   group: publish
