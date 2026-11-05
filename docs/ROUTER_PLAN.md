@@ -1,6 +1,6 @@
 # Módulo `geko-router`: plan
 
-Estado (2026-11-04, bloques B y C hechos salvo la publicación real de los packs; medición del punto 4 aplazada): en desarrollo, en la rama `feature/router-module` de `candymaps/geko-router`, sin publicar. Lo hecho y lo que falta está en «Seguimiento». Las decisiones abiertas están al final.
+Estado (2026-11-05, bloques B y C hechos, con los packs publicados; medición del punto 4 aplazada): en desarrollo, en la rama `feature/router-module` de `candymaps/geko-router`, sin publicar. Lo hecho y lo que falta está en «Seguimiento». Las decisiones abiertas están al final.
 
 ## Objetivo
 
@@ -85,7 +85,9 @@ Revisión de lectura, no asesoramiento jurídico. geko no aloja estos datos: cad
 **Madrid (sensores): usable.**
 - La ficha del conjunto `202087-0-trafico-intensidad` dice «Creative Commons Attribution 4.0 International (CC BY 4.0)».
 - CC BY 4.0 permite uso comercial y obras derivadas con atribución. La atribución va a `/v1/attribution`: «Ayuntamiento de Madrid, datos abiertos (CC BY 4.0)».
-- Pendiente: no pude abrir la página de «Condiciones de uso» del portal (mi URL dio 404), y en 2016 el Ayuntamiento tenía una licencia propia con condiciones por conjunto. Hay que leer esa página y la ficha del conjunto de histórico antes de publicar el pack.
+- Leídas el 2026-11-05 (resumidas por la herramienta web, no el texto íntegro): [condiciones de uso](https://datos.madrid.es/pages/condiciones-de-uso), [condiciones generales](https://datos.madrid.es/pages/condiciones-generales-ayuntamiento-de-madrid) y [aviso legal](https://datos.madrid.es/pages/aviso-legal). El conjunto de histórico también es CC BY 4.0. Permiten el uso comercial, y copiar, modificar y combinar los datos. Ninguna limita el acceso automático.
+- Obligan a citar la fuente, indicar la fecha de actualización si la hay, no desnaturalizar la información, no insinuar que el Ayuntamiento apoya el uso, conservar los metadatos y no reidentificar personas. El uso corre por cuenta de quien reutiliza. Las condiciones generales no mencionan CC BY: se cumplen las dos.
+- Cómo se cumple, con el tráfico activo: `/v1/attribution` da la fuente, la licencia con su enlace y que los datos están modificados, y `traffic.source_updated` da la fecha del feed tal cual. Queda sin cerrar «no desnaturalizar»: los factores de nivel de servicio son provisionales hasta el punto 20, y antes de eso es mejor no presentar el tráfico como una medida fiable.
 - Cuidado con la mezcla de licencias, igual que con CartoCiudad (CC BY) junto a OSM (ODbL): los pesos de tráfico y el grafo de OSM viajan en el mismo bundle. Conviene fijar qué parte del bundle es obra derivada de OSM (ODbL) y cuál lleva CC BY, y declararlo en el manifiesto.
 
 **DGT (incidencias): usable con reservas.**
@@ -289,7 +291,7 @@ Comprobado el 2026-11-04 con el binario de `geko` y la `.so` del módulo (Madrid
 - [x] 15. Pack `es` completo: `regions.toml`, `region-boxes.tsv` (copiados del geocoder), `tests/pack.rs` y golden.
   - Golden (`ci/golden.sh`): 200 rutas en `es` (100 de Baleares y 100 de Madrid con una lectura congelada del feed), cada una con su duración y distancia. Dos pasadas dan 0 diferencias. En Madrid, 13 de 100 rutas se alargan con tráfico: el feed se congeló a las 23:29, sin apenas retenciones.
   - **Lo que no prueba:** los números son los que da hoy el router, así que detectan cambios, no aciertos. Solo las 9 rutas escritas a mano llevan un rango (`expect_km`), y es una estimación mía, no una medición en un mapa: amplié a 30–50 km el de Móstoles–Alcobendas al dar 47,3 km por la M-50. No se han comparado con OSRM, porque esta máquina no tiene Docker.
-  - Los datos congelados (`golden/snapshot`) están solo en `/var/lib/geko/golden/router` de esta máquina, sin publicar: otra máquina no puede pasar el golden. `ci/golden.sh` no corre en CI (punto 33).
+  - Los datos congelados (`golden/snapshot`) están en el paquete privado `ghcr.io/candymaps/geko-router/golden`, y el job `golden` de `ci.yml` los baja y pasa las rutas en cada PR que cambie lo que se compila.
 - [x] 16. Pack `lu`: solo OSM, con su calendario de festivos, una partición y 100 rutas de golden (4 a mano). El extracto sale del índice de Geofabrik, sin `osm.toml`. Las velocidades son una copia de las de `es`.
 - [x] 17. Particiones con sellos, **adaptado** (2026-11-04): por extracto, no por provincia.
   - La CCH es global, porque una ruta cruza provincias, y un PBF nuevo de España cambia todas las provincias a la vez: un sello por provincia no ahorraría nada con el país entero.
@@ -297,11 +299,10 @@ Comprobado el 2026-11-04 con el binario de `geko` y la `.so` del módulo (Madrid
   - Un ámbito de provincias recorta a sus cajas: Málaga (`ES-MA`) da 138.175 nodos, frente a 597.010 de Andalucía (`ES-AN`), y 2 regiones del mismo extracto comparten una lectura.
   - España completa, sin cambios en el grafo: 3.793.285 nodos, 8.287.395 aristas y 14.590.189 giros, los mismos que antes de los fragmentos. Tarda 253 s, con pico de 3,2 GB (fragmento de `spain` 151 s, grafo 37 s, jerarquía 61 s). La cifra anterior (408 s, 3,1 GB) es de otra sesión, así que no prueba una mejora de tiempo. Los fragmentos son trabajo en disco, no van al bundle.
   - Una caja es un rectángulo: incluye algo de las provincias vecinas, y una vía se corta en su borde.
-- [ ] 18. Publicación firmada de los packs en ghcr. **Preparada, sin publicar.**
-  - Hecho: `ci/packs.sh`, `ci/oras.sh`, el binario `geko-router-pack-sign` y `.github/workflows/publish.yml`, en cada push a `main`. La firma con dominio propio tiene test, y `GEKO_PACKS_DRY_RUN=1` firma los dos packs con una clave de prueba.
-  - Sin probar: la subida a un registro. El workflow no se ha ejecutado nunca.
-  - Falta: fusionar a `main` (punto 37), con los secretos `GEKO_PACK_SIGNING_KEY` y `GEKO_HOST_TOKEN` en el repositorio, y hacer públicos los paquetes en ghcr. Esta máquina no tiene la clave ni `gh`, así que no se pudo comprobar si los secretos existen.
-  - **Mientras tanto, `geko` solo funciona con `GEKO_ROUTER_PACKS` o una copia a mano** (`ci/packs.sh <datos>/router/packs`).
+- [x] 18. Publicación firmada de los packs en ghcr. Hecha el 2026-11-05: `es` y `lu` están públicos en `ghcr.io/candymaps/geko-router/countries/<país>`, con `format-1` y `pack-1`.
+  - `ci/packs.sh`, `ci/oras.sh`, el binario `geko-router-pack-sign` y `.github/workflows/publish.yml`, en cada push a `main`. `GEKO_PACKS_DRY_RUN=1` firma los dos packs con una clave de prueba.
+  - Comprobado con `geko` y la `.so` del módulo, sin `GEKO_ROUTER_PACKS` y en una carpeta de datos vacía: baja y verifica los dos packs sin credenciales, y `plan`, `build` y `serve` responden rutas de Madrid y Luxemburgo.
+  - `pack-1` ya no se puede cambiar: cualquier cambio en los ficheros publicados de un pack necesita subir su `version`.
 
 ### D. Tráfico completo
 
@@ -313,7 +314,7 @@ Comprobado el 2026-11-04 con el binario de `geko` y la `.so` del módulo (Madrid
 - [ ] 24. Perfil histórico: mediciones, velocidad por hora y día, calendario de festivos, y decaimiento hacia el histórico en vez de a velocidad libre. Como mete datos de Madrid (CC BY) en el bundle junto al grafo de OSM (ODbL), hay que declarar en el manifiesto qué lleva cada licencia. El código sigue siendo AGPL; hoy no hay mezcla, porque el tráfico en vivo no va en el bundle.
 - [ ] 25. `traffic=none|historical|live` y `depart_at`, con la parte histórica en `traffic.coverage`.
 - [ ] 26. Incidencias: parser DATEX II y cierre real de vías (hoy lo más lento es un 5 % de la velocidad). La fuente de la DGT queda desactivada por defecto hasta cerrar el punto 28.
-- [ ] 27. **[gestión]** Leer las condiciones de uso de Madrid y la ficha del conjunto de histórico antes de publicar el pack.
+- [x] 27. **[gestión]** Leer las condiciones de uso de Madrid y la ficha del conjunto de histórico. Hecho el 2026-11-05, después de publicar `pack-1`, que solo declara la fuente (ver «Licencias»). Revisión de lectura, no asesoramiento jurídico.
 - [ ] 28. **[gestión]** Escribir a la DGT para aclarar su licencia. Es una precaución, no un permiso previo: no bloquea el punto 26 y solo condiciona activar la fuente por defecto.
 
 ### E. Funciones de la fase posterior
@@ -327,12 +328,11 @@ Comprobado el 2026-11-04 con el binario de `geko` y la `.so` del módulo (Madrid
 
 - [x] 33. CI del módulo: `ci.yml`, `pr-comment.yml`, `protected.yml`, `ci/test.sh`, `ci/affected.sh` y `deny.toml`, como en los tiles.
   - `ci/test.sh` pasa clippy, reglas de dependencias, `cargo-deny`, tests y conformidad. Pasa en WSL; en GitHub aún no se ha ejecutado, porque solo corre en un PR.
-  - El golden no corre en CI, porque sus datos no están publicados (punto 15): `ci/test.sh --variant golden`, a mano.
-  - Falta en GitHub: exigir `test` y `protected` en la protección de `main` y `dev`.
+  - La protección de `main` y `dev` exige `test`, `golden` y `protected`.
 - [ ] 34. Publicar el módulo firmado y añadirlo a `ci/modules` del host.
 - [ ] 35. README, `AGENTS.md`, sección «Optimizaciones» y referencia de opciones del módulo.
 - [ ] 36. Actualizar PROJECT.md y el README del host con el módulo nuevo. Este plan vive en este repositorio, como lo propio del módulo.
-- [ ] 37. PR de `feature/router-module` a `dev`, y de `dev` a `main`.
+- [x] 37. PR de `feature/router-module` a `dev`, y de `dev` a `main`. **Adelantado** (2026-11-05) para publicar los packs: los puntos 34 a 36 y los bloques D y E siguen abiertos, y llegarán a `main` con sus propias PR.
 
 ### Propuesta de corte de la v1
 

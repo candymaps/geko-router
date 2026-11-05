@@ -419,8 +419,17 @@ mod tests {
                 std::fs::write(dir.join(file), text.replace(from, to)).unwrap();
             }
         };
-        assert!(broken(edit(PACK_FILE, "version = 1", "version = 0")).contains("version starts at 1"));
-        assert!(broken(edit(PACK_FILE, "version = 1", "versoin = 1")).contains(PACK_FILE));
+        // The line of the version, whichever it is now.
+        let version = |line: &'static str| {
+            move |dir: &Path| {
+                let text = std::fs::read_to_string(dir.join(PACK_FILE)).unwrap();
+                let lines: Vec<&str> = text.lines().map(|l| if l.starts_with("version =") { line } else { l }).collect();
+                std::fs::write(dir.join(PACK_FILE), lines.join("
+")).unwrap();
+            }
+        };
+        assert!(broken(version("version = 0")).contains("version starts at 1"));
+        assert!(broken(version("versoin = 1")).contains(PACK_FILE));
         assert!(broken(edit(PACK_FILE, "[\"car\"]", "[\"bike\"]")).contains("car"));
         assert!(broken(edit(ROAD_CLASSES_FILE, "motorway = 90", "motorway = 0")).contains(ROAD_CLASSES_FILE));
         assert!(broken(edit(CALENDAR_FILE, "\"05-09\"", "\"May 9\"")).contains("May 9"));

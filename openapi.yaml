@@ -228,6 +228,7 @@ components:
       properties:
         slowed_edges: { type: integer, description: Edges slower than free flow; 0 when nothing is slow. }
         age_s: { type: integer, description: Seconds since the sources last answered. }
+        source_updated: { type: [string, "null"], description: "When the source last updated its data, as it writes it: in Madrid, `03/11/2026 17:55:02`, local time." }
         coverage:
           type: object
           description: Only in a route. The share of its length that live data cover.

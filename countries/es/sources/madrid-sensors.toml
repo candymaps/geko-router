@@ -47,8 +47,9 @@ saturation_intensity = "intensidadSat"
 max_distance_m = 30
 road_classes = ["motorway", "trunk", "primary", "secondary", "tertiary", "unclassified", "residential"]
 
-# Fraction of the free-flow speed that each service level gives. Provisional: it is calibrated
-# against the historical dataset of the same portal before the pack is published.
+# Fraction of the free-flow speed that each service level gives. Provisional, and published so: it
+# is still to be calibrated against the historical dataset of the same portal (docs/ROUTER_PLAN.md,
+# point 20).
 [service_level_factor]
 0 = 1.0
 1 = 0.7
