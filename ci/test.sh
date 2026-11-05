@@ -10,8 +10,8 @@
 #                 (cargo-deny)
 #   contracts     unit tests, the tests of each country pack and the conformance suite of the module
 #                 contract
-#   golden        the golden routes of the packs (ci/golden.sh). Not by default, nor on the CI: it
-#                 needs the frozen data, which are only on the machine that froze them
+#   golden        the golden routes of the packs (ci/golden.sh), on frozen data pulled from the
+#                 registry. Not by default: on the CI it is a job of its own
 set -euo pipefail
 cd "$(dirname "$0")/.."
 

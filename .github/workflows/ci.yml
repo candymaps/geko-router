@@ -1,9 +1,9 @@
 # The checks of every pull request. On a pull request (or by hand), `test` finds whether it changes
 # what the checks build (ci/affected.sh) and, if it does, runs the whole ci/test.sh on it. It is the
 # status that the protection of main and dev requires: it always runs, and passes when the checks
-# passed or were not needed. pr-comment.yml says on the pull request which of the two it was. The
-# golden routes do not run here: their frozen data are not published (docs/ROUTER_PLAN.md, point 15).
-# What reaches main, already checked, is published by publish.yml.
+# passed or were not needed. pr-comment.yml says on the pull request which of the two it was.
+# `golden`, under the same condition, runs the golden routes of the packs on their frozen data
+# (ci/test.sh --variant golden). What reaches main, already checked, is published by publish.yml.
 name: ci
 
 on:
@@ -82,3 +82,46 @@ jobs:
           name: pr
           path: pr.json
           retention-days: 1
+
+  # The golden routes of the packs, if the pull request changes what the checks build (ci/affected.sh),
+  # on the frozen data of each golden/snapshot: the package ghcr.io/candymaps/geko-router/golden, read
+  # with the token of the workflow. As in `test`, the checks are skipped step by step, never the job.
+  golden:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    env:
+      GEKO_GOLDEN_DATA: ${{ github.workspace }}/.geko-golden
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - id: affected
+        run: |
+          run=1
+          if [ "${{ github.event_name }}" = pull_request ] && [ -z "$(ci/affected.sh HEAD^1 HEAD)" ]; then
+            run=0
+          fi
+          echo "run=$run" >> "$GITHUB_OUTPUT"
+          echo "run $run"
+      - if: steps.affected.outputs.run == '1'
+        uses: oras-project/setup-oras@v1
+      - if: steps.affected.outputs.run == '1'
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | oras login ghcr.io -u "${{ github.actor }}" --password-stdin
+      - env:
+          HOST_TOKEN: ${{ secrets.GEKO_HOST_TOKEN }}
+        if: steps.affected.outputs.run == '1' && env.HOST_TOKEN != ''
+        run: git config --global url."https://x-access-token:$HOST_TOKEN@github.com/candymaps/geko.git".insteadOf https://github.com/candymaps/geko.git
+      - if: steps.affected.outputs.run == '1'
+        run: rustup toolchain install
+      - if: steps.affected.outputs.run == '1'
+        uses: Swatinem/rust-cache@v2
+      # The frozen data, which never change under the same snapshots.
+      - if: steps.affected.outputs.run == '1'
+        uses: actions/cache@v4
+        with:
+          path: .geko-golden
+          key: geko-golden-${{ hashFiles('countries/*/golden/snapshot') }}
+      - if: steps.affected.outputs.run == '1'
+        run: ci/test.sh --variant golden
