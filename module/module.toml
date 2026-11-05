@@ -1,0 +1,5 @@
+# The package of the router module (docs/MODULES_PLAN.md of the host): the library that geko loads
+# into its process (`DylibModule`, the only adapter), from the crate in module/dylib/.
+name = "router"
+kind = "dylib"
+entry = "libgeko_router.so"

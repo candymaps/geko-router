@@ -1,0 +1,21 @@
+# Days on which the historical traffic profile of a holiday applies instead of the one of its
+# weekday: the public holidays of Luxembourg.
+
+# Month and day, every year.
+fixed = [
+    "01-01", # New Year's Day
+    "05-01", # Labour Day
+    "05-09", # Europe Day
+    "06-23", # National Day
+    "08-15", # Assumption
+    "11-01", # All Saints' Day
+    "12-25", # Christmas Day
+    "12-26", # Second Day of Christmas
+]
+
+# Days from Easter Sunday.
+easter_relative = [
+    1,  # Easter Monday
+    39, # Ascension Day
+    50, # Whit Monday
+]

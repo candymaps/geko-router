@@ -1,0 +1,4 @@
+# The golden routes of Luxembourg (ci/golden.sh).
+
+[luxembourg]
+extracts = ["luxembourg-latest.osm.pbf"]

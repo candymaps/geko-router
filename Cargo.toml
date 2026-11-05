@@ -1,0 +1,29 @@
+[workspace]
+resolver = "3"
+members = ["module", "module/dylib"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "AGPL-3.0-only"
+
+[workspace.dependencies]
+# The contract, from the repository of the host (docs/MODULES_PLAN.md there), at its tag sdk-<contract>.
+geko-module-sdk = { git = "https://github.com/candymaps/geko.git", tag = "sdk-1" }
+geko-module-router = { path = "module" }
+tracing = "0.1"
+geko-fetch = { git = "https://github.com/candymaps/geko.git", tag = "sdk-1" }
+geko-artifact = { git = "https://github.com/candymaps/geko.git", tag = "sdk-1" }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+# Unwind, not abort: a bug in one request must never take the whole server down.
+panic = "unwind"
+
+[profile.ci]
+inherits = "release"
+lto = "thin"
+codegen-units = 16

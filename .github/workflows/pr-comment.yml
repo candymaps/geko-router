@@ -1,0 +1,64 @@
+# Says on each pull request what its checks (ci.yml) did: passed, failed, or not needed because it
+# only changes documentation or what the checks do not build. One comment per pull request, updated
+# on every run. It runs apart from ci.yml, with the right to write on pull requests that ci.yml lacks
+# for those of a fork; it checks nothing out and runs no code of the pull request, and the artifact
+# it reads, written by that code's run, is validated before use.
+name: pr-comment
+
+on:
+  workflow_run:
+    workflows: [ci]
+    types: [completed]
+
+permissions:
+  actions: read
+  pull-requests: write
+
+jobs:
+  comment:
+    # A run cancelled by a newer push leaves the comment to that one.
+    if: github.event.workflow_run.event == 'pull_request' && github.event.workflow_run.conclusion != 'cancelled'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: pr
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const run = context.payload.workflow_run;
+            const pr = JSON.parse(require('fs').readFileSync('pr.json', 'utf8'));
+            const texts = {
+              'passed': '✅ The checks passed: the whole `ci/test.sh`.',
+              'failure': '❌ The checks failed: see the run. It cannot be merged until they pass.',
+              'not-needed': 'ℹ️ The checks are not needed: this pull request only changes documentation or what `ci/test.sh` does not build (`ci/affected.sh`). It can be merged without them.',
+            };
+            // What merging it changes of the host it builds against (ci.yml, `warnings`): a run from
+            // before the field has none.
+            const warningTexts = {
+              'contract': '⚠️ **Merging this pull request changes the contract**: `Cargo.toml` moves the SDK to another `sdk-<contract>` tag, which the host must already speak.',
+              'sdk': '⚠️ **Merging this pull request changes the SDK**: `Cargo.toml` or `Cargo.lock` points `geko-module-sdk` to another version.',
+            };
+            const warnings = typeof pr.warnings === 'string' ? pr.warnings.split(' ').filter(Boolean) : [];
+            if (!Number.isInteger(pr.number) || !(pr.result in texts) || pr.head !== run.head_sha || !warnings.every(w => w in warningTexts)) {
+              core.setFailed(`invalid pr.json: ${JSON.stringify(pr)}`);
+              return;
+            }
+            // The run must be of that pull request, at its current head: an older run says nothing.
+            const { data: pull } = await github.rest.pulls.get({ ...context.repo, pull_number: pr.number });
+            if (pull.head.sha !== run.head_sha) {
+              core.info(`#${pr.number} is now at ${pull.head.sha}, not ${run.head_sha}`);
+              return;
+            }
+            const marker = '<!-- geko-checks -->';
+            const alerts = warnings.map(w => `\n\n${warningTexts[w]}`).join('');
+            const body = `${marker}\n${texts[pr.result]}${alerts}\n\nCommit ${run.head_sha.slice(0, 7)}, [run](${run.html_url}).`;
+            const comments = await github.paginate(github.rest.issues.listComments, { ...context.repo, issue_number: pr.number });
+            const mine = comments.find(c => c.user.type === 'Bot' && c.body.startsWith(marker));
+            if (mine) {
+              await github.rest.issues.updateComment({ ...context.repo, comment_id: mine.id, body });
+            } else {
+              await github.rest.issues.createComment({ ...context.repo, issue_number: pr.number, body });
+            }

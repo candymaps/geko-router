@@ -1,0 +1,45 @@
+# Fails a pull request that changes, removes or renames a file only the owner may change: the license,
+# the documents of the repository, what checks and publishes it (.github, ci) and what sets
+# how strict the checks are (deny.toml, clippy.toml, .cargo, rust-toolchain.toml). The
+# protection of main and dev requires it beside `test`. It is a workflow of its own, on
+# pull_request_target, because GitHub runs it as it is in the base branch: the pull request it
+# checks cannot change it, as it can change ci.yml. It checks nothing out and runs no code of the
+# pull request: it only reads the list of its files.
+name: protected
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, edited]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  protected:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const owner = 'edgaza';
+            const protectedFiles = ['LICENSE', 'CONTRIBUTING.md', 'README.md', 'AGENTS.md', 'CLAUDE.md',
+              'deny.toml', 'clippy.toml', '.clippy.toml', 'rust-toolchain.toml', 'rust-toolchain'];
+            const protectedDirs = ['.github/', 'ci/', '.cargo/'];
+            const pr = context.payload.pull_request;
+            if (pr.user.login === owner) {
+              core.info(`#${pr.number} is by ${owner}, who may change every file`);
+              return;
+            }
+            // Dependabot, whose name no one else can take, may raise the actions the workflows use:
+            // nothing else of what is protected.
+            const allowed = path => pr.user.login === 'dependabot[bot]' && path.startsWith('.github/workflows/');
+            const isProtected = path => (protectedFiles.includes(path) || protectedDirs.some(d => path.startsWith(d))) && !allowed(path);
+            const files = await github.paginate(github.rest.pulls.listFiles, { ...context.repo, pull_number: pr.number, per_page: 100 });
+            // A rename touches its old path too.
+            const touched = files.flatMap(f => [f.filename, f.previous_filename].filter(Boolean)).filter(isProtected);
+            if (touched.length > 0) {
+              core.setFailed(`only ${owner} may change these files: ${[...new Set(touched)].join(', ')}`);
+            } else {
+              core.info(`#${pr.number} changes no protected file`);
+            }
