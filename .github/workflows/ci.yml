@@ -1,0 +1,84 @@
+# The checks of every pull request. On a pull request (or by hand), `test` finds whether it changes
+# what the checks build (ci/affected.sh) and, if it does, runs the whole ci/test.sh on it. It is the
+# status that the protection of main and dev requires: it always runs, and passes when the checks
+# passed or were not needed. pr-comment.yml says on the pull request which of the two it was. The
+# golden routes do not run here: their frozen data are not published (docs/ROUTER_PLAN.md, point 15).
+# What reaches main, already checked, is published by publish.yml.
+name: ci
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  # A new push to a pull request supersedes its checks.
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # The checks are skipped step by step, never the job: a required job that GitHub skips counts as
+  # passed. It leaves its result in the artifact `pr` for pr-comment.yml, which may write on the pull
+  # request (this run, from a fork, may not).
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      # Whether the pull request changes what the checks build: the diff of its merge commit with
+      # the base branch (its first parent). A run by hand checks everything.
+      - id: affected
+        run: |
+          code=1
+          if [ "${{ github.event_name }}" = pull_request ] && [ -z "$(ci/affected.sh HEAD^1 HEAD)" ]; then
+            code=0
+          fi
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+          echo "code $code"
+      # The host (Cargo.toml: the SDK), while it is a private repository that the token of this
+      # workflow cannot read: GEKO_HOST_TOKEN, with read access to its contents. A pull request from
+      # a fork has no secrets, and reads it only once it is public.
+      - env:
+          HOST_TOKEN: ${{ secrets.GEKO_HOST_TOKEN }}
+        if: steps.affected.outputs.code == '1' && env.HOST_TOKEN != ''
+        run: git config --global url."https://x-access-token:$HOST_TOKEN@github.com/candymaps/geko.git".insteadOf https://github.com/candymaps/geko.git
+      # The toolchain pinned in rust-toolchain.toml.
+      - if: steps.affected.outputs.code == '1'
+        run: rustup toolchain install
+      - if: steps.affected.outputs.code == '1'
+        uses: Swatinem/rust-cache@v2
+      - if: steps.affected.outputs.code == '1'
+        run: ci/test.sh
+      # What merging the pull request changes of the host it builds against, for pr-comment.yml to
+      # warn of it, whether or not the checks ran: `contract` (the `sdk-<contract>` tag of the SDK in
+      # Cargo.toml) and `sdk` (that dependency, in Cargo.toml or in what Cargo.lock locks).
+      - id: warnings
+        if: always() && github.event_name == 'pull_request'
+        run: |
+          pin() { git show "$1:Cargo.toml" | grep '^geko-module-sdk' || true; }
+          locked() { git show "$1:Cargo.lock" | grep -A3 '^name = "geko-module-sdk"' | grep '^source' || true; }
+          tag() { pin "$1" | sed -n 's/.*tag = "sdk-\([0-9]*\)".*/\1/p'; }
+          warnings=
+          [ "$(tag HEAD^1)" = "$(tag HEAD)" ] || warnings="$warnings contract"
+          [ "$(pin HEAD^1)$(locked HEAD^1)" = "$(pin HEAD)$(locked HEAD)" ] || warnings="$warnings sdk"
+          echo "warnings=${warnings# }" >> "$GITHUB_OUTPUT"
+          echo "warnings: ${warnings:-none}"
+      - if: always() && github.event_name == 'pull_request'
+        run: |
+          result=failure
+          if [ "${{ job.status }}" = success ]; then
+            result=not-needed
+            [ "${{ steps.affected.outputs.code }}" = 1 ] && result=passed
+          fi
+          echo "checks: $result"
+          printf '{"number": %s, "head": "%s", "result": "%s", "warnings": "%s"}\n' \
+            "${{ github.event.pull_request.number }}" "${{ github.event.pull_request.head.sha }}" "$result" "${{ steps.warnings.outputs.warnings }}" > pr.json
+      - if: always() && github.event_name == 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr
+          path: pr.json
+          retention-days: 1

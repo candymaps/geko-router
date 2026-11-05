@@ -1,0 +1,297 @@
+openapi: 3.1.0
+info:
+  title: geko router
+  version: "1"
+  summary: Routes, matrices and nearest streets for cars on OpenStreetMap.
+  description: |
+    Fastest routes by car, with alternatives and steps, matrices of durations and the nearest street,
+    under `/router/`. The format is geko's own: it is not compatible with OSRM, though the names
+    (`duration_s`, `distance_m`, `steps`, `maneuver`, `modifier`) are alike where they mean the same.
+
+    Points are `lat,lon` in WGS 84; a coordinate of a GeoJSON line is `[lon, lat]`. Durations are in
+    seconds and distances in metres. A route is the fastest one by the time of its streets at the
+    speeds of the road class (the same as OSRM's `car.lua` profile gives) plus the cost of each turn
+    and traffic light, and live traffic where the scope has a source.
+
+    A point is snapped to the closest street within `snap_m` metres, in each direction a car can go
+    along it. What every module shares (`/health`, `/metrics`, `/v1/attribution`, API keys, CORS and
+    the rate limit) is in the reference of geko itself, `/openapi.yaml`.
+
+    The data are a Derived Database of OpenStreetMap, © OpenStreetMap contributors, ODbL 1.0.
+servers:
+  - url: /router
+    description: The router of the geko serving this document
+paths:
+  /:
+    get:
+      summary: A page to try the router on.
+      description: Public, without an API key. It asks the other routes, so it needs the key if they do.
+      responses:
+        "200":
+          description: An HTML page that is self-contained, and makes no request outside this server.
+          content:
+            text/html: { schema: { type: string } }
+  /v1/status:
+    get:
+      summary: What is loaded.
+      responses:
+        "200":
+          description: The size of the graph, where it is and the state of traffic.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [nodes, edges, turns, bounds, traffic]
+                properties:
+                  nodes: { type: integer }
+                  edges: { type: integer, description: Directed edges of the road graph. }
+                  turns: { type: integer, description: Allowed turns between edges. }
+                  bounds:
+                    type: array
+                    minItems: 4
+                    maxItems: 4
+                    items: { type: number }
+                    description: "`[min lat, min lon, max lat, max lon]` of the graph."
+                  traffic: { $ref: "#/components/schemas/Traffic" }
+        "503": { $ref: "#/components/responses/Error" }
+  /v1/route:
+    get:
+      summary: The fastest route between two points.
+      description: |
+        The route has the time and length of the fastest way, its line and, if asked, its steps and up
+        to three alternatives. An alternative is a different way that takes at most 25 % longer than
+        the fastest, shares at most 80 % of itself with each route given before it, and is locally
+        optimal (no detour that a better road near it avoids). There can be fewer than asked, or none.
+      parameters:
+        - { name: from, in: query, required: true, schema: { $ref: "#/components/schemas/Point" }, example: "39.5696,2.6502" }
+        - { name: to, in: query, required: true, schema: { $ref: "#/components/schemas/Point" }, example: "39.7000,3.0000" }
+        - $ref: "#/components/parameters/snapM"
+        - name: geometry
+          in: query
+          schema: { type: boolean, default: true }
+          description: "`false` leaves the line out of the route and its alternatives."
+        - name: steps
+          in: query
+          schema: { type: boolean, default: false }
+          description: Adds the steps of each route.
+        - name: alternatives
+          in: query
+          schema: { type: integer, minimum: 0, maximum: 3, default: 0 }
+          description: How many other routes to look for.
+      responses:
+        "200":
+          description: The route.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RouteResponse" }
+        "400": { $ref: "#/components/responses/Error" }
+        "404":
+          description: There is no route between the points (they are on separate parts of the road network).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "422":
+          description: No street within `snap_m` of `from` or `to`.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /v1/nearest:
+    get:
+      summary: The street closest to a point.
+      parameters:
+        - { name: at, in: query, required: true, schema: { $ref: "#/components/schemas/Point" }, example: "39.5696,2.6502" }
+        - $ref: "#/components/parameters/snapM"
+      responses:
+        "200":
+          description: Where the point snapped.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [snapped, way]
+                properties:
+                  snapped: { $ref: "#/components/schemas/Snapped" }
+                  way: { type: integer, format: int64, description: The OpenStreetMap way of the street. }
+        "400": { $ref: "#/components/responses/Error" }
+        "422":
+          description: No street within `snap_m` of the point.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /v1/table:
+    get:
+      summary: The durations from some points to others.
+      description: |
+        A matrix of durations from each `from` to each `to`, in seconds. Up to 1,000,000 cells and 2,000
+        points a side; a thousand by a thousand takes about half a second. `null` is a cell with no route
+        or a point with no street near it.
+      parameters:
+        - name: from
+          in: query
+          required: true
+          style: form
+          explode: true
+          schema: { type: array, items: { $ref: "#/components/schemas/Point" } }
+          description: Repeat the parameter for each point.
+        - name: to
+          in: query
+          required: true
+          style: form
+          explode: true
+          schema: { type: array, items: { $ref: "#/components/schemas/Point" } }
+        - $ref: "#/components/parameters/snapM"
+      responses:
+        "200": { $ref: "#/components/responses/Table" }
+        "400": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+    post:
+      summary: The same matrix, with the points in the body.
+      description: For more points than a URL holds.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [from, to]
+              properties:
+                from: { type: array, items: { $ref: "#/components/schemas/LatLon" } }
+                to: { type: array, items: { $ref: "#/components/schemas/LatLon" } }
+                snap_m: { type: number, exclusiveMinimum: 0, maximum: 50000, default: 1000 }
+            example: { from: [[39.5696, 2.6502], [39.70, 3.00]], to: [[39.85, 3.10], [39.60, 2.90]] }
+      responses:
+        "200": { $ref: "#/components/responses/Table" }
+        "400": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+components:
+  parameters:
+    snapM:
+      name: snap_m
+      in: query
+      schema: { type: number, exclusiveMinimum: 0, maximum: 50000, default: 1000 }
+      description: How far from a street, in metres, a point may be and still snap to it.
+  responses:
+    Error:
+      description: Something is wrong with the request, or the router is not ready (`Retry-After` says when to ask again).
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Table:
+      description: The matrix.
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [durations_s, snapped, compute_us, traffic]
+            properties:
+              durations_s:
+                type: array
+                items: { type: array, items: { type: [number, "null"] } }
+                description: A row for each `from`, a column for each `to`.
+              snapped:
+                type: object
+                properties:
+                  from: { type: array, items: { oneOf: [{ $ref: "#/components/schemas/Snapped" }, { type: "null" }] } }
+                  to: { type: array, items: { oneOf: [{ $ref: "#/components/schemas/Snapped" }, { type: "null" }] } }
+                description: Where each point snapped; `null` for one with no street near.
+              compute_us: { type: integer }
+              traffic: { $ref: "#/components/schemas/Traffic" }
+  schemas:
+    Point:
+      type: string
+      pattern: '^-?[0-9.]+,-?[0-9.]+$'
+      description: "`lat,lon`"
+    LatLon:
+      type: array
+      minItems: 2
+      maxItems: 2
+      items: { type: number }
+      description: "`[lat, lon]`"
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error: { type: string }
+    Snapped:
+      description: The point of the street that a point snapped to.
+      type: object
+      required: [lat, lon, distance_m]
+      properties:
+        lat: { type: number }
+        lon: { type: number }
+        distance_m: { type: number, description: How far the point was from the street. }
+    Traffic:
+      description: What live traffic says. `null` when no source says anything (it is off, offline, or its data are too old).
+      type: [object, "null"]
+      properties:
+        slowed_edges: { type: integer, description: Edges slower than free flow; 0 when nothing is slow. }
+        age_s: { type: integer, description: Seconds since the sources last answered. }
+        coverage:
+          type: object
+          description: Only in a route. The share of its length that live data cover.
+          properties:
+            live: { type: number }
+            free_flow: { type: number }
+    LineString:
+      type: object
+      required: [type, coordinates]
+      properties:
+        type: { const: LineString }
+        coordinates: { type: array, items: { type: array, minItems: 2, maxItems: 2, items: { type: number } }, description: "`[lon, lat]`" }
+    Step:
+      type: object
+      required: [maneuver, distance_m, duration_s, location]
+      properties:
+        maneuver:
+          type: string
+          enum: [depart, turn, new name, arrive]
+          description: "`new name` is a change of street without a turn; `arrive` has no length."
+        modifier:
+          type: string
+          enum: [slight left, left, sharp left, straight, slight right, right, sharp right, uturn]
+          description: Which way a `turn` or a `new name` goes.
+        name: { type: string, description: The street the step goes along, by its name or else its reference (`Ma-13`). Absent when it has none. }
+        distance_m: { type: number }
+        duration_s: { type: number, description: The time to the next step, with the turn that ends it. }
+        location:
+          type: array
+          minItems: 2
+          maxItems: 2
+          items: { type: number }
+          description: "`[lon, lat]` where the step starts."
+    RouteBody:
+      type: object
+      required: [duration_s, distance_m]
+      properties:
+        duration_s: { type: number }
+        distance_m: { type: number }
+        geometry: { $ref: "#/components/schemas/LineString" }
+        steps: { type: array, items: { $ref: "#/components/schemas/Step" } }
+    RouteResponse:
+      allOf:
+        - $ref: "#/components/schemas/RouteBody"
+        - type: object
+          required: [snapped, traffic, compute_us]
+          properties:
+            snapped:
+              type: object
+              properties:
+                from: { $ref: "#/components/schemas/Snapped" }
+                to: { $ref: "#/components/schemas/Snapped" }
+            traffic: { $ref: "#/components/schemas/Traffic" }
+            compute_us: { type: integer }
+            alternatives:
+              type: array
+              description: The other routes, the fastest first. Only when `alternatives` was asked.
+              items:
+                allOf:
+                  - $ref: "#/components/schemas/RouteBody"
+                  - type: object
+                    properties:
+                      coverage:
+                        type: object
+                        properties:
+                          live: { type: number }
+                          free_flow: { type: number }

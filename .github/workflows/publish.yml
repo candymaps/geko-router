@@ -1,0 +1,43 @@
+# The publication of what reaches main: on every push to it, the country packs that changed, signed,
+# in ghcr.io/candymaps/geko-router/countries/<country> (tags format-<n>, pack-<n> and
+# <version>-<commit>). The module itself is published later (docs/ROUTER_PLAN.md, point 34).
+#
+# Needs the secret GEKO_PACK_SIGNING_KEY, the key of the other artifacts of geko, and GEKO_HOST_TOKEN
+# while the host is private; GitHub's own token pushes. Not in a fork. The first time, the package of
+# each country is born private: make it public in GitHub («Package settings»), or no geko can read it.
+name: publish
+
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: publish
+  # A publication cut halfway would leave a pack without its tags.
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  packs:
+    if: github.repository == 'candymaps/geko-router'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      # The host (Cargo.toml), while it is a private repository: GEKO_HOST_TOKEN, with read access to
+      # its contents.
+      - env:
+          HOST_TOKEN: ${{ secrets.GEKO_HOST_TOKEN }}
+        if: env.HOST_TOKEN != ''
+        run: git config --global url."https://x-access-token:$HOST_TOKEN@github.com/candymaps/geko.git".insteadOf https://github.com/candymaps/geko.git
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - uses: oras-project/setup-oras@v1
+      - run: echo "${{ secrets.GITHUB_TOKEN }}" | oras login ghcr.io -u "${{ github.actor }}" --password-stdin
+      - run: ci/packs.sh publish
+        env:
+          GEKO_PACK_SIGNING_KEY: ${{ secrets.GEKO_PACK_SIGNING_KEY }}

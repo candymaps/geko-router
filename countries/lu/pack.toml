@@ -1,0 +1,14 @@
+# Country pack of Luxembourg for geko-router: only OpenStreetMap, without traffic. The whole country
+# is one partition, and the Geofabrik index gives its extract by its ISO code, so it needs neither
+# data/regions.toml nor sources/osm.toml.
+
+country = "LU"
+# Raise it with every change to the pack (this file, data/ or sources/): it is published as the
+# tag pack-<version>, and publishing refuses other files under a version already published.
+version = 1
+
+# The profiles the pack has data for (data/road-classes.toml is that of the car).
+profiles = ["car"]
+
+# Time zone of the profiles of historical traffic and of the calendar.
+timezone = "Europe/Luxembourg"

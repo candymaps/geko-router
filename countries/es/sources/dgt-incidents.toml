@@ -1,0 +1,42 @@
+# DGT: incidents, closures and roadworks of the national road network, from the Punto de Acceso
+# Nacional (NAP), dataset incidencias-dgt-datex2-v3-7, DATEX II v3.7. Checked on 2026-11-03: one XML
+# of 7 MB (220 KB with gzip), no authentication, updated every minute. It does not cover the Basque
+# Country or Catalonia (they publish their own, as in nap.dgt.es "Incidencias DT-GV" and
+# "Incidencias SCT"). It carries no speed or flow: only situations.
+#
+# Disabled by default until the DGT confirms the reuse in writing: the dataset says Creative
+# Commons Attribution, but the legal notice it links to reserves reproduction, distribution,
+# commercialization and transformation (docs/ROUTER_PLAN.md, «Licencias»). geko does not host
+# the data: each installation downloads it from the DGT.
+
+kind = "datex2-situations"
+enabled = false
+license = { name = "CC BY (Open Definition), conditions in the DGT legal notice", attribution = "Dirección General de Tráfico (DGT), Punto de Acceso Nacional", url = "https://nap.dgt.es/en/dataset/incidencias-dgt-datex2-v3-7" }
+terms_url = "https://www.dgt.es/contenido/aviso-legal/"
+catalog_url = "https://nap.dgt.es/en/dataset/incidencias-dgt-datex2-v3-7"
+url = "https://nap.dgt.es/datex2/v3/dgt/SituationPublication/datex2_v37.xml"
+accept_encoding = "gzip"
+
+# The feed sets `Cache-Control: max-age=39` and has no `ETag`: poll once a minute.
+refresh_secs = 60
+ttl_secs = 300
+
+# Only records with this validity status are applied.
+validity_status = "active"
+
+# What each kind of record does to the edges it covers. Locations are `SingleRoadLinearLocation`
+# (a stretch between two points) and `PointLocation`, with WGS 84 coordinates.
+[effects.roadOrCarriagewayOrLaneManagement]
+roadClosed = "closed"
+carriagewayClosures = "closed"
+laneClosures = { speed_factor = 0.8 }
+singleAlternateLineTraffic = { speed_factor = 0.4 }
+intermittentShortTermClosures = { speed_factor = 0.5 }
+narrowLanes = { speed_factor = 0.8 }
+lanesDeviated = { speed_factor = 0.8 }
+
+[effects.abnormalTraffic]
+slowTraffic = { speed_factor = 0.5 }
+
+[matching]
+max_distance_m = 25
