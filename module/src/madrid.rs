@@ -58,6 +58,12 @@ pub fn parse(xml: &str) -> Vec<Reading> {
         .collect()
 }
 
+/// When the city last updated the feed, as it writes it (`03/11/2026 17:55:02`, local time): its terms
+/// ask to say it and not to alter it.
+pub fn updated(xml: &str) -> Option<String> {
+    tag(xml, "fecha_hora").filter(|date| !date.is_empty()).map(str::to_owned)
+}
+
 /// The direction a sensor measures, in degrees clockwise from north, from the `A-B` of its description
 /// (travelling from A to B, so towards B), or `None`.
 pub fn heading(description: &str) -> Option<f64> {
@@ -194,6 +200,13 @@ mod tests {
         <pm><idelem>2</idelem><descripcion>NO LEVEL</descripcion><nivelServicio>9</nivelServicio><error>N</error><st_x>436004,1</st_x><st_y>4472588,4</st_y></pm>\n\
         <pm><idelem>3</idelem><descripcion>NO POSITION</descripcion><nivelServicio>1</nivelServicio><error>N</error></pm>\n\
         </pms>";
+
+    #[test]
+    fn the_date_of_the_feed_is_kept_as_it_comes() {
+        assert_eq!(updated(FEED).as_deref(), Some("03/11/2026 17:55:02"));
+        assert_eq!(updated("<pms></pms>"), None);
+        assert_eq!(updated("<pms><fecha_hora> </fecha_hora></pms>"), None);
+    }
 
     #[test]
     fn the_feed_is_read_with_its_decimal_commas_and_the_broken_sensors_left_out() {

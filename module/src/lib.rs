@@ -172,7 +172,7 @@ impl RouterModule {
             },
         });
         for source in live::wanted(&self.setup) {
-            attribution[format!("traffic_{}", source.name)] = serde_json::json!({ "license": source.license.name, "notice": source.license.attribution });
+            attribution[format!("traffic_{}", source.name)] = live::attribution(&source);
         }
         attribution
     }
