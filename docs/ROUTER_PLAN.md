@@ -325,7 +325,10 @@ Comprobado el 2026-11-04 con el binario de `geko` y la `.so` del módulo (Madrid
 
 ### F. Publicación
 
-- [ ] 33. CI del módulo: `.github`, `ci/test.sh`, `deny.toml` y conformidad en cada PR.
+- [x] 33. CI del módulo: `ci.yml`, `pr-comment.yml`, `protected.yml`, `ci/test.sh`, `ci/affected.sh` y `deny.toml`, como en los tiles.
+  - `ci/test.sh` pasa clippy, reglas de dependencias, `cargo-deny`, tests y conformidad. Pasa en WSL; en GitHub aún no se ha ejecutado, porque solo corre en un PR.
+  - El golden no corre en CI, porque sus datos no están publicados (punto 15): `ci/test.sh --variant golden`, a mano.
+  - Falta en GitHub: exigir `test` y `protected` en la protección de `main` y `dev`.
 - [ ] 34. Publicar el módulo firmado y añadirlo a `ci/modules` del host.
 - [ ] 35. README, `AGENTS.md`, sección «Optimizaciones» y referencia de opciones del módulo.
 - [ ] 36. Actualizar PROJECT.md y el README del host con el módulo nuevo. Este plan vive en este repositorio, como lo propio del módulo.
