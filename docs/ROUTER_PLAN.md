@@ -1,6 +1,6 @@
 # Módulo `geko-router`: plan
 
-Estado (2026-11-05, bloques B y C hechos, con los packs publicados; medición del punto 4 aplazada): en desarrollo, en la rama `feature/router-module` de `candymaps/geko-router`, sin publicar. Lo hecho y lo que falta está en «Seguimiento». Las decisiones abiertas están al final.
+Estado (2026-11-06): en desarrollo, con el código en `dev` y `main` de `candymaps/geko-router`. Bloques B y C hechos, y los packs `es` y `lu` publicados con la clave de firma nueva (`pack-2`). El módulo aún no se publica (punto 34) y la medición del punto 4 sigue aplazada. Lo hecho y lo que falta está en «Seguimiento». Las decisiones abiertas están al final.
 
 ## Objetivo
 
@@ -181,7 +181,7 @@ Antes de afirmar «más rápido que OSRM»:
 
 ## Pasos
 
-Cada paso deja resultados verificables antes del siguiente.
+Cada paso deja resultados verificables antes del siguiente. Es el orden con el que se planteó el trabajo; lo que está hecho y lo que falta se lleva en «Seguimiento».
 
 1. **Esqueleto del módulo.** Repositorio, `describe`, `plan`/`fetch` del OSM, `handle` que responde 503, conformidad de la SDK en verde. Publicación firmada.
 2. **Grafo y perfil de coche.** Grafo con giros y restricciones, `nearest`, golden de Baleares (`ES-PM`) y Luxemburgo.
@@ -196,6 +196,15 @@ Cada paso deja resultados verificables antes del siguiente.
 ## Seguimiento
 
 Lista de trabajo, en el orden previsto. Al cerrar un punto se marca aquí, con su commit o su medición. Los marcados con **[decisión]** o **[gestión]** dependen del propietario del proyecto.
+
+| Bloque | Hechos | Pendiente |
+|---|---|---|
+| A. Base sólida y medida | 6 de 7 | 4 (aplazado) |
+| B. API de la fase 1 | 5 de 5 | |
+| C. Packs de país | 6 de 6 | |
+| D. Tráfico completo | 1 de 10 | 19 a 26 y 28 |
+| E. Funciones de la fase posterior | 0 de 4 | 29 a 32 |
+| F. Publicación | 2 de 5 | 34, 35 y 36 |
 
 **Hecho (2026-11-04):** grafo con giros, restricciones y ferris; CCH con customización en caliente; `v1/route` con pasos y alternativas, `v1/nearest`, `v1/table` (etiquetas muchos-a-muchos, 1.000.000 de celdas como máximo) y `v1/status`; `openapi.yaml` y demo; packs `es` y `lu` leídos en tiempo de ejecución, con etapas por extracto; tráfico en vivo de los sensores de Madrid, opcional y desactivado por defecto, con `traffic.coverage`.
 
@@ -299,15 +308,16 @@ Comprobado el 2026-11-04 con el binario de `geko` y la `.so` del módulo (Madrid
   - Un ámbito de provincias recorta a sus cajas: Málaga (`ES-MA`) da 138.175 nodos, frente a 597.010 de Andalucía (`ES-AN`), y 2 regiones del mismo extracto comparten una lectura.
   - España completa, sin cambios en el grafo: 3.793.285 nodos, 8.287.395 aristas y 14.590.189 giros, los mismos que antes de los fragmentos. Tarda 253 s, con pico de 3,2 GB (fragmento de `spain` 151 s, grafo 37 s, jerarquía 61 s). La cifra anterior (408 s, 3,1 GB) es de otra sesión, así que no prueba una mejora de tiempo. Los fragmentos son trabajo en disco, no van al bundle.
   - Una caja es un rectángulo: incluye algo de las provincias vecinas, y una vía se corta en su borde.
-- [x] 18. Publicación firmada de los packs en ghcr. Hecha el 2026-11-05: `es` y `lu` están públicos en `ghcr.io/candymaps/geko-router/countries/<país>`, con `format-1` y `pack-1`.
+- [x] 18. Publicación firmada de los packs en ghcr. Hecha el 2026-11-05: `es` y `lu` están públicos en `ghcr.io/candymaps/geko-router/countries/<país>`, con `format-1` y `pack-2`.
   - `ci/packs.sh`, `ci/oras.sh`, el binario `geko-router-pack-sign` y `.github/workflows/publish.yml`, en cada push a `main`. `GEKO_PACKS_DRY_RUN=1` firma los dos packs con una clave de prueba.
   - Comprobado con `geko` y la `.so` del módulo, sin `GEKO_ROUTER_PACKS` y en una carpeta de datos vacía: baja y verifica los dos packs sin credenciales, y `plan`, `build` y `serve` responden rutas de Madrid y Luxemburgo.
-  - `pack-1` ya no se puede cambiar: cualquier cambio en los ficheros publicados de un pack necesita subir su `version`.
+  - Una versión publicada no se puede cambiar: cualquier cambio en los ficheros de un pack, también su firma, necesita subir su `version`.
+  - Clave rotada el 2026-11-06: `geko` 0.3.0 solo confía en la nueva, y por eso los dos packs pasaron a `pack-2`. Comprobado: acepta `pack-2` y rechaza `pack-1`, que sigue en ghcr, con «not signed by a trusted key». Las imágenes anteriores de `geko` no aceptan lo firmado con la clave nueva.
 
 ### D. Tráfico completo
 
 - [ ] 19. Probar la capa en vivo con el feed real de Madrid, de punta a punta. Prueba de humo el 2026-11-04, con `geko serve` y el feed real: 1.248 aristas medidas, 127 lentas y una ruta del centro que pasa de 695 a 711 s. Queda abierto: no se ha comprobado el casado sensor a sensor ni el comportamiento en horas punta.
-- [ ] 20. Calibrar la conversión de nivel de servicio a velocidad (valores provisionales).
+- [ ] 20. Calibrar la conversión de nivel de servicio a velocidad (valores provisionales). Se deja para más adelante por decisión del propietario, y hasta entonces no se cierra «no desnaturalizar» de las condiciones de Madrid (ver «Licencias»).
 - [ ] 21. Proveedores genéricos por `kind`. La URL, la cadencia, la caducidad, la licencia y lo que cubre Madrid ya salen del pack; falta que `madrid.rs` lea del pack las etiquetas y los factores de nivel de servicio, que siguen en el código.
 - [ ] 22. Casar los sensores al generar el bundle, no en servicio.
 - [ ] 23. Combinar varias fuentes: hoy hay un único poller y cada lectura sustituye a la anterior.
@@ -327,16 +337,16 @@ Comprobado el 2026-11-04 con el binario de `geko` y la `.so` del módulo (Madrid
 ### F. Publicación
 
 - [x] 33. CI del módulo: `ci.yml`, `pr-comment.yml`, `protected.yml`, `ci/test.sh`, `ci/affected.sh` y `deny.toml`, como en los tiles.
-  - `ci/test.sh` pasa clippy, reglas de dependencias, `cargo-deny`, tests y conformidad. Pasa en WSL; en GitHub aún no se ha ejecutado, porque solo corre en un PR.
+  - `ci/test.sh` pasa clippy, reglas de dependencias, `cargo-deny`, tests y conformidad, en WSL y en los PR de GitHub. El job `golden` pasa las 300 rutas sobre los datos congelados.
   - La protección de `main` y `dev` exige `test`, `golden` y `protected`.
-- [ ] 34. Publicar el módulo firmado y añadirlo a `ci/modules` del host.
+- [ ] 34. Publicar el módulo firmado y añadirlo a `ci/modules` del host. Hoy `publish.yml` solo publica los packs, y `ci/modules` lista `geocoder` y `tiles`.
 - [ ] 35. README, `AGENTS.md`, sección «Optimizaciones» y referencia de opciones del módulo.
 - [ ] 36. Actualizar PROJECT.md y el README del host con el módulo nuevo. Este plan vive en este repositorio, como lo propio del módulo.
 - [x] 37. PR de `feature/router-module` a `dev`, y de `dev` a `main`. **Adelantado** (2026-11-05) para publicar los packs: los puntos 34 a 36 y los bloques D y E siguen abiertos, y llegarán a `main` con sus propias PR.
 
 ### Propuesta de corte de la v1
 
-**[decisión]** Bloques A, B y F, más los puntos 13–15 del pack `es`, con el tráfico de Madrid desactivado por defecto. El resto de C y D iría en versiones siguientes, y E al final.
+**[decisión]** Bloques A, B y F, más los puntos 13–15 del pack `es`, con el tráfico de Madrid desactivado por defecto. El resto de C y D iría en versiones siguientes, y E al final. Con este corte faltan los puntos 34, 35 y 36, y el 4, que está aplazado.
 
 ## Riesgos
 
