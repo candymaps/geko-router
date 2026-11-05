@@ -1,6 +1,6 @@
 # Módulo `geko-router`: plan
 
-Estado (2026-11-04, bloques B y C hechos salvo la publicación real de los packs; medición del punto 4 aplazada): en desarrollo, en la rama `feature/router-module` de `candymaps/geko-router`, sin publicar. Lo hecho y lo que falta está en «Seguimiento». Las decisiones abiertas están al final.
+Estado (2026-11-05, bloques B y C hechos, con los packs publicados; medición del punto 4 aplazada): en desarrollo, en la rama `feature/router-module` de `candymaps/geko-router`, sin publicar. Lo hecho y lo que falta está en «Seguimiento». Las decisiones abiertas están al final.
 
 ## Objetivo
 
@@ -297,11 +297,10 @@ Comprobado el 2026-11-04 con el binario de `geko` y la `.so` del módulo (Madrid
   - Un ámbito de provincias recorta a sus cajas: Málaga (`ES-MA`) da 138.175 nodos, frente a 597.010 de Andalucía (`ES-AN`), y 2 regiones del mismo extracto comparten una lectura.
   - España completa, sin cambios en el grafo: 3.793.285 nodos, 8.287.395 aristas y 14.590.189 giros, los mismos que antes de los fragmentos. Tarda 253 s, con pico de 3,2 GB (fragmento de `spain` 151 s, grafo 37 s, jerarquía 61 s). La cifra anterior (408 s, 3,1 GB) es de otra sesión, así que no prueba una mejora de tiempo. Los fragmentos son trabajo en disco, no van al bundle.
   - Una caja es un rectángulo: incluye algo de las provincias vecinas, y una vía se corta en su borde.
-- [ ] 18. Publicación firmada de los packs en ghcr. **Preparada, sin publicar.**
-  - Hecho: `ci/packs.sh`, `ci/oras.sh`, el binario `geko-router-pack-sign` y `.github/workflows/publish.yml`, en cada push a `main`. La firma con dominio propio tiene test, y `GEKO_PACKS_DRY_RUN=1` firma los dos packs con una clave de prueba.
-  - Sin probar: la subida a un registro. El workflow no se ha ejecutado nunca.
-  - Falta: fusionar a `main` (punto 37), con los secretos `GEKO_PACK_SIGNING_KEY` y `GEKO_HOST_TOKEN` en el repositorio, y hacer públicos los paquetes en ghcr. Esta máquina no tiene la clave ni `gh`, así que no se pudo comprobar si los secretos existen.
-  - **Mientras tanto, `geko` solo funciona con `GEKO_ROUTER_PACKS` o una copia a mano** (`ci/packs.sh <datos>/router/packs`).
+- [x] 18. Publicación firmada de los packs en ghcr. Hecha el 2026-11-05: `es` y `lu` están públicos en `ghcr.io/candymaps/geko-router/countries/<país>`, con `format-1` y `pack-1`.
+  - `ci/packs.sh`, `ci/oras.sh`, el binario `geko-router-pack-sign` y `.github/workflows/publish.yml`, en cada push a `main`. `GEKO_PACKS_DRY_RUN=1` firma los dos packs con una clave de prueba.
+  - Comprobado con `geko` y la `.so` del módulo, sin `GEKO_ROUTER_PACKS` y en una carpeta de datos vacía: baja y verifica los dos packs sin credenciales, y `plan`, `build` y `serve` responden rutas de Madrid y Luxemburgo.
+  - `pack-1` ya no se puede cambiar: cualquier cambio en los ficheros publicados de un pack necesita subir su `version`.
 
 ### D. Tráfico completo
 
@@ -332,7 +331,7 @@ Comprobado el 2026-11-04 con el binario de `geko` y la `.so` del módulo (Madrid
 - [ ] 34. Publicar el módulo firmado y añadirlo a `ci/modules` del host.
 - [ ] 35. README, `AGENTS.md`, sección «Optimizaciones» y referencia de opciones del módulo.
 - [ ] 36. Actualizar PROJECT.md y el README del host con el módulo nuevo. Este plan vive en este repositorio, como lo propio del módulo.
-- [ ] 37. PR de `feature/router-module` a `dev`, y de `dev` a `main`.
+- [x] 37. PR de `feature/router-module` a `dev`, y de `dev` a `main`. **Adelantado** (2026-11-05) para publicar los packs: los puntos 34 a 36 y los bloques D y E siguen abiertos, y llegarán a `main` con sus propias PR.
 
 ### Propuesta de corte de la v1
 
