@@ -55,6 +55,8 @@ pub struct Loaded {
     scratches: Mutex<Vec<Scratch>>,
     /// When the sources last answered, which can be after the last change of the weights.
     updated: Mutex<Instant>,
+    /// The date the source gives to its data, as it writes it.
+    source_updated: Mutex<Option<String>>,
     /// `[min lat, min lon, max lat, max lon]` of the nodes, found the first time it is asked.
     bounds: std::sync::OnceLock<[f64; 4]>,
 }
@@ -63,7 +65,7 @@ impl Loaded {
     fn new(graph: Graph, free: TurnGraph, snapper: Snapper, cch: Cch) -> Self {
         let free = Arc::new(free);
         let turns = Arc::clone(&free);
-        Self { graph, free, snapper, live: RwLock::new(Arc::new(Weighted { turns, cch, slowed_edges: None, measured: Vec::new() })), scratches: Mutex::new(Vec::new()), updated: Mutex::new(Instant::now()), bounds: std::sync::OnceLock::new() }
+        Self { graph, free, snapper, live: RwLock::new(Arc::new(Weighted { turns, cch, slowed_edges: None, measured: Vec::new() })), scratches: Mutex::new(Vec::new()), updated: Mutex::new(Instant::now()), source_updated: Mutex::new(None), bounds: std::sync::OnceLock::new() }
     }
 
     fn bounds(&self) -> [f64; 4] {
@@ -107,11 +109,17 @@ impl Loaded {
         *self.updated.lock().unwrap_or_else(|e| e.into_inner()) = updated;
     }
 
+    /// The date the source gives to what it said last.
+    pub fn set_source_updated(&self, date: Option<String>) {
+        *self.source_updated.lock().unwrap_or_else(|e| e.into_inner()) = date;
+    }
+
     /// What a response says of traffic: `null` when no source says anything (it is off, or the data
     /// are too old); with nothing slow, `slowed_edges` is 0.
     fn traffic(&self, weighted: &Weighted) -> serde_json::Value {
         let age_s = self.updated.lock().unwrap_or_else(|e| e.into_inner()).elapsed().as_secs();
-        weighted.slowed_edges.map_or(serde_json::Value::Null, |slowed_edges| serde_json::json!({ "slowed_edges": slowed_edges, "age_s": age_s }))
+        let source_updated = self.source_updated.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        weighted.slowed_edges.map_or(serde_json::Value::Null, |slowed_edges| serde_json::json!({ "slowed_edges": slowed_edges, "age_s": age_s, "source_updated": source_updated }))
     }
 
     /// Runs `query` with the state of a query of the pool.
@@ -494,9 +502,11 @@ mod tests {
         let loaded = server.current().unwrap();
         let mut traffic = Traffic::free(loaded.edges());
         (0..loaded.edges() as u32).for_each(|e| traffic.set(e, FREE_FLOW));
+        loaded.set_source_updated(Some("03/11/2026 17:55:02".into()));
         loaded.apply(&traffic, Instant::now());
         let (_, body) = get(&server, &[("from", "0,-0.0005"), ("to", "0.0005,0")]);
         assert_eq!(body["traffic"]["slowed_edges"], 0);
+        assert_eq!(body["traffic"]["source_updated"], "03/11/2026 17:55:02");
         assert_eq!(body["traffic"]["coverage"], serde_json::json!({ "live": 1.0, "free_flow": 0.0 }));
         // The data got too old: back to knowing nothing.
         loaded.apply(&Traffic::free(loaded.edges()), Instant::now());

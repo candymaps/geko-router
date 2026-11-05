@@ -85,7 +85,9 @@ Revisión de lectura, no asesoramiento jurídico. geko no aloja estos datos: cad
 **Madrid (sensores): usable.**
 - La ficha del conjunto `202087-0-trafico-intensidad` dice «Creative Commons Attribution 4.0 International (CC BY 4.0)».
 - CC BY 4.0 permite uso comercial y obras derivadas con atribución. La atribución va a `/v1/attribution`: «Ayuntamiento de Madrid, datos abiertos (CC BY 4.0)».
-- Pendiente: no pude abrir la página de «Condiciones de uso» del portal (mi URL dio 404), y en 2016 el Ayuntamiento tenía una licencia propia con condiciones por conjunto. Hay que leer esa página y la ficha del conjunto de histórico antes de publicar el pack.
+- Leídas el 2026-11-05 (resumidas por la herramienta web, no el texto íntegro): [condiciones de uso](https://datos.madrid.es/pages/condiciones-de-uso), [condiciones generales](https://datos.madrid.es/pages/condiciones-generales-ayuntamiento-de-madrid) y [aviso legal](https://datos.madrid.es/pages/aviso-legal). El conjunto de histórico también es CC BY 4.0. Permiten el uso comercial, y copiar, modificar y combinar los datos. Ninguna limita el acceso automático.
+- Obligan a citar la fuente, indicar la fecha de actualización si la hay, no desnaturalizar la información, no insinuar que el Ayuntamiento apoya el uso, conservar los metadatos y no reidentificar personas. El uso corre por cuenta de quien reutiliza. Las condiciones generales no mencionan CC BY: se cumplen las dos.
+- Cómo se cumple, con el tráfico activo: `/v1/attribution` da la fuente, la licencia con su enlace y que los datos están modificados, y `traffic.source_updated` da la fecha del feed tal cual. Queda sin cerrar «no desnaturalizar»: los factores de nivel de servicio son provisionales hasta el punto 20, y antes de eso es mejor no presentar el tráfico como una medida fiable.
 - Cuidado con la mezcla de licencias, igual que con CartoCiudad (CC BY) junto a OSM (ODbL): los pesos de tráfico y el grafo de OSM viajan en el mismo bundle. Conviene fijar qué parte del bundle es obra derivada de OSM (ODbL) y cuál lleva CC BY, y declararlo en el manifiesto.
 
 **DGT (incidencias): usable con reservas.**
@@ -312,7 +314,7 @@ Comprobado el 2026-11-04 con el binario de `geko` y la `.so` del módulo (Madrid
 - [ ] 24. Perfil histórico: mediciones, velocidad por hora y día, calendario de festivos, y decaimiento hacia el histórico en vez de a velocidad libre. Como mete datos de Madrid (CC BY) en el bundle junto al grafo de OSM (ODbL), hay que declarar en el manifiesto qué lleva cada licencia. El código sigue siendo AGPL; hoy no hay mezcla, porque el tráfico en vivo no va en el bundle.
 - [ ] 25. `traffic=none|historical|live` y `depart_at`, con la parte histórica en `traffic.coverage`.
 - [ ] 26. Incidencias: parser DATEX II y cierre real de vías (hoy lo más lento es un 5 % de la velocidad). La fuente de la DGT queda desactivada por defecto hasta cerrar el punto 28.
-- [ ] 27. **[gestión]** Leer las condiciones de uso de Madrid y la ficha del conjunto de histórico antes de publicar el pack.
+- [x] 27. **[gestión]** Leer las condiciones de uso de Madrid y la ficha del conjunto de histórico. Hecho el 2026-11-05, después de publicar `pack-1`, que solo declara la fuente (ver «Licencias»). Revisión de lectura, no asesoramiento jurídico.
 - [ ] 28. **[gestión]** Escribir a la DGT para aclarar su licencia. Es una precaución, no un permiso previo: no bloquea el punto 26 y solo condiciona activar la fuente por defecto.
 
 ### E. Funciones de la fase posterior

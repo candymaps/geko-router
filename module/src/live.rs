@@ -46,6 +46,18 @@ pub fn wanted(setup: &Setup) -> Vec<Source> {
     sources
 }
 
+/// What the terms of a source ask of a response that uses it: who it comes from, its license with a
+/// link to it, and that what the router does with the data is not what the source published, nor
+/// something it backs. The date of the data is in `traffic.source_updated` of each response.
+pub fn attribution(source: &Source) -> serde_json::Value {
+    serde_json::json!({
+        "license": source.license.name,
+        "license_url": source.license.url,
+        "notice": source.license.attribution,
+        "changes": "Modified: the speeds are estimated from these data, and are not values of the source, which neither takes part in this service nor endorses it.",
+    })
+}
+
 /// Gets the text of the feed of a source.
 pub type Fetch = Box<dyn FnMut() -> Result<String, String> + Send>;
 
@@ -86,6 +98,7 @@ pub fn start(loaded: Arc<Loaded>, interval: Duration, max_age: Duration, mut fet
                         }
                         speeds = matcher.speeds(&readings);
                         last_ok = Some(Instant::now());
+                        loaded.set_source_updated(madrid::updated(&text));
                     }
                 }
                 Err(e) => tracing::warn!(error = %e, "cannot read the traffic feed"),
@@ -147,6 +160,16 @@ mod tests {
         assert!(names(on, "ES", &[], true).is_empty(), "offline");
         assert!(names("[traffic]\nenabled = true\nlive = false", "ES", &[], false).is_empty());
         assert!(names("[traffic]\nenabled = true\n[sources.madrid-sensors]\nenabled = false", "ES", &[], false).is_empty());
+    }
+
+    #[test]
+    fn a_source_in_use_owes_its_license_and_says_its_data_are_changed() {
+        let sources = wanted(&setup("[traffic]\nenabled = true", "ES", &[], false));
+        let attribution = attribution(&sources[0]);
+        assert_eq!(attribution["license"], "CC BY 4.0");
+        assert_eq!(attribution["license_url"], "https://creativecommons.org/licenses/by/4.0/legalcode.es");
+        assert!(attribution["notice"].as_str().unwrap().contains("Ayuntamiento de Madrid"));
+        assert!(attribution["changes"].as_str().unwrap().starts_with("Modified"));
     }
 
     #[test]
