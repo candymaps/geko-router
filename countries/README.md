@@ -60,10 +60,11 @@ Para añadir el crate de pruebas de un país nuevo, declara su `[[test]]` en `mo
 
 `golden/sets.toml` nombra cada conjunto: sus extractos y, si lo tiene, una lectura congelada de un feed de tráfico. `golden/<conjunto>.jsonl` lleva una línea por ruta, con origen, destino, `duration_s`, `distance_m` y, con feed, `traffic_duration_s`. Las escritas a mano llevan además `expect_km`, un rango **estimado a mano**, no medido en un mapa: sirve para detectar un disparate, no para validar una ruta al metro.
 
-`golden/snapshot` da el `sha256` de cada fichero. Los ficheros no están en el repositorio ni publicados: viven en `$GEKO_GOLDEN_DATA` (por defecto `/var/lib/geko/golden/router`) de la máquina que los congeló, y sin ellos `ci/golden.sh` no puede comprobar nada.
+`golden/snapshot` da el `sha256` de cada fichero. Los ficheros están en `$GEKO_GOLDEN_DATA` (por defecto `/var/lib/geko/golden/router`), y los que faltan se bajan del paquete privado `ghcr.io/candymaps/geko-router/golden`, con `oras login ghcr.io`. El job `golden` de `ci.yml` los lee con el token del workflow.
 
 - `ci/golden.sh [país…]` compara y falla si algo cambia en más de 0,1 s o 0,1 m.
 - `ci/golden.sh --write [país…]` escribe lo que dan ahora. Revisa el diff antes de hacer commit: un cambio sin explicación es un fallo.
+- `ci/golden.sh --publish [país…]` sube los datos congelados. Hazlo antes de hacer commit de un `golden/snapshot` nuevo, o el CI no los encontrará.
 - El ejemplo `golden` con `--generate <n>` añade rutas aleatorias, de semilla fija, hasta llegar a `n`.
 
 ## Publicar
