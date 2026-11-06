@@ -12,7 +12,7 @@
 
 # geko-router
 
-The routing module of [geko](https://github.com/candymaps/geko). **Status: in development, and off by default in geko.** It meets the contract of the host and passes its conformance suite; it downloads the OSM extracts of the scope, builds a graph with turn costs and restrictions and a Customizable Contraction Hierarchy, leaves its part of the bundle (all of Spain in about 4 minutes, 1.1 GB on disk) and serves it. Cars only, for now. The plan, with its decisions and measurements, is in [docs/ROUTER_PLAN.md](docs/ROUTER_PLAN.md) (in Spanish).
+The routing module of [geko](https://github.com/candymaps/geko). **Status: published, and off by default in geko.** It meets the contract of the host and passes its conformance suite; it downloads the OSM extracts of the scope, builds a graph with turn costs and restrictions and a Customizable Contraction Hierarchy, leaves its part of the bundle (all of Spain in about 4 minutes, 1.1 GB on disk) and serves it. Cars only, for now. The plan, with its decisions and measurements, is in [docs/ROUTER_PLAN.md](docs/ROUTER_PLAN.md) (in Spanish).
 
 What it serves, under `/router/`:
 
