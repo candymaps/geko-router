@@ -153,7 +153,7 @@ Sustituye a `[traffic.madrid]`, `interval_secs` y `max_age_secs`: la cadencia y 
 
 - `[sources.<nombre>]` solo admite claves que existan en el fichero de la fuente, y nombrar una fuente que ningún pack del ámbito tiene es un error. Se comprueba con los packs a mano, en `prepare`.
 - `[serve] countries`, que estaba en este plan, **se descartó** (2026-11-04): hay un único grafo para todo el ámbito, porque una ruta cruza fronteras, y `[[scope]]` ya dice qué países se sirven.
-- Con `preload = false`, las rutas de `v1/route`, `v1/nearest` y `v1/table` disparan la carga y esperan a que acabe. `v1/status` responde 503 hasta entonces, porque no corre en el pool y no debe bloquearse.
+- Con `preload = false`, las rutas de `v1/route`, `v1/nearest` y `v1/table` disparan la carga y esperan a que acabe. `v1/status` responde `ready: false` hasta entonces, porque no corre en el pool y no debe bloquearse; el dashboard lo lee también sin grafo (antes respondía 503; cambiado el 2026-11-06).
 
 Las opciones que cambian lo generado (perfil, velocidades del pack, recorte) entran en los sellos de las etapas. Una opción desconocida es un error que nombra el fichero y la clave, como en el geocoder.
 
@@ -196,6 +196,7 @@ Cada paso deja resultados verificables antes del siguiente. Es el orden con el q
 9. **Documentación** en cada paso: este plan, PROJECT.md (módulos, §14 hoja de ruta y §16 pendientes), README del host (módulo nuevo) y del módulo.
 
 ## Seguimiento
+n**Dashboard de geko (2026-11-06):** `v1/stats` (`stats.rs`: peticiones, errores y tiempo por ruta, la última hora minuto a minuto y el último minuto segundo a segundo) y `v1/status` con `ready`, `bundle`, `sources`, `settings` y `last_build`, que el build deja en `last_build.router.json`. Sin grafo, `v1/status` responde `ready: false` en vez de 503, como los otros módulos, y la demo lo trata igual. Coste de los contadores en Luxemburgo, con `wrk` y 8 conexiones, 4 rondas intercaladas de 8 s: 10.700 frente a 10.817 peticiones por segundo (−1,1 %), dentro del ruido (las rondas derivaron de 11.500 a 10.200).
 
 Lista de trabajo, en el orden previsto. Al cerrar un punto se marca aquí, con su commit o su medición. Los marcados con **[decisión]** o **[gestión]** dependen del propietario del proyecto.
 

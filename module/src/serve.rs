@@ -1,6 +1,6 @@
 //! What the router answers under `/router/`: it loads the graph of the bundle, prepares what a
 //! route needs (turns, components, the index of streets) and answers `v1/route`, `v1/table`,
-//! `v1/nearest` and `v1/status`.
+//! `v1/nearest`, `v1/status` and `v1/stats`.
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::Instant;
 
 use geko_module_sdk::Result;
+use geko_module_sdk::bundle::BundleManifest;
 use geko_module_sdk::module::{Request, Response};
 
 use crate::cch::{Cch, Scratch};
@@ -21,6 +22,7 @@ use crate::steps;
 use crate::scc;
 use crate::snap::{Snap, Snapper};
 use crate::situations::Places;
+use crate::stats::Stats;
 use crate::traffic::{CLOSED, FREE_FLOW, Known, Traffic};
 use crate::turn::{self, TurnGraph, TurnProfile};
 use crate::graph_io;
@@ -269,12 +271,30 @@ pub struct Server {
     ok: AtomicU64,
     no_route: AtomicU64,
     bad_request: AtomicU64,
+    stats: Stats,
+    /// Every option of `geko-router.toml`, for `v1/status`.
+    settings: serde_json::Value,
+    /// The data directory of the host, where the build leaves the stages of its last run.
+    data_dir: std::path::PathBuf,
+    /// The sources this module reads: the manifest also carries those of the other modules.
+    own_sources: Vec<String>,
+    /// The bundle that answers and its sources, as its manifest says.
+    bundle: RwLock<Option<(serde_json::Value, serde_json::Value)>>,
 }
 
 impl Server {
     /// A server of the graphs of `mode`.
     pub fn new(mode: Mode) -> Self {
         Self { mode, ..Self::default() }
+    }
+
+    /// What `v1/status` says of the configuration: its options, where the stages of the last build
+    /// are, and which sources of the manifest are of this module.
+    pub fn with_status(mut self, settings: serde_json::Value, data_dir: std::path::PathBuf, own_sources: Vec<String>) -> Self {
+        self.settings = settings;
+        self.data_dir = data_dir;
+        self.own_sources = own_sources;
+        self
     }
 }
 
@@ -410,6 +430,12 @@ impl Server {
         let graph = graph_io::read(&root.join(GRAPH_PART).join(GRAPH_FILE))?;
         let bundled = Bundled::read(&root.join(TRAFFIC_PART))?;
         self.install(graph, MIN_COMPONENT, Some(&root.join(HIERARCHY_PART).join(HIERARCHY_FILE)), bundled);
+        let about = BundleManifest::read(root).ok().map(|manifest| {
+            let own = manifest.licenses.iter().filter(|l| self.own_sources.contains(&l.source));
+            let sources = own.map(|l| serde_json::json!({ "id": l.source, "name": l.name, "attribution": l.attribution, "url": l.url })).collect();
+            (serde_json::json!({ "version": manifest.version, "created_unix": manifest.created_unix }), sources)
+        });
+        *self.bundle.write().unwrap_or_else(|e| e.into_inner()) = about;
         Ok(())
     }
 
@@ -441,13 +467,49 @@ impl Server {
         match request.route.as_str() {
             "" => return Response::new(200, "text/html; charset=utf-8", DEMO),
             "openapi.yaml" => return Response::new(200, "application/yaml", OPENAPI),
+            "v1/status" => return json(200, self.status()),
+            "v1/stats" => return json(200, self.stats.snapshot()),
             _ => {}
         }
+        let started = Instant::now();
+        let response = self.answer(request);
+        self.stats.record(&request.route, response.status, started.elapsed().as_micros() as u64);
+        response
+    }
+
+    /// What is loaded and how it is set up, also before there is a graph: the dashboard reads it.
+    fn status(&self) -> serde_json::Value {
+        let (bundle, sources) = self.bundle.read().unwrap_or_else(|e| e.into_inner()).clone().unwrap_or_default();
+        let mut body = serde_json::json!({
+            "ready": false,
+            "bundle": bundle,
+            "profile": Mode::NAMES[self.mode as usize],
+            "nodes": null,
+            "edges": null,
+            "turns": null,
+            "bounds": null,
+            "traffic": null,
+            "sources": sources,
+            "settings": self.settings,
+            "last_build": crate::pipeline::last_build(&self.data_dir),
+        });
+        if let Some(loaded) = self.current() {
+            body["ready"] = true.into();
+            body["nodes"] = loaded.graph.nodes.len().into();
+            body["edges"] = loaded.graph.edges.len().into();
+            body["turns"] = loaded.free.arcs.len().into();
+            body["bounds"] = serde_json::json!(loaded.bounds());
+            body["traffic"] = loaded.traffic(&loaded.weighted());
+        }
+        body
+    }
+
+    /// The routes that need the graph.
+    fn answer(&self, request: &Request) -> Response {
         let Some(loaded) = self.current() else {
             return Response::error(503, "the router has no graph yet").with_header("Retry-After", "60");
         };
         match request.route.as_str() {
-            "v1/status" => json(200, serde_json::json!({ "profile": Mode::NAMES[self.mode as usize], "nodes": loaded.graph.nodes.len(), "edges": loaded.graph.edges.len(), "turns": loaded.free.arcs.len(), "bounds": loaded.bounds(), "traffic": loaded.traffic(&loaded.weighted()) })),
             "v1/route" => self.route(&loaded, request),
             "v1/table" => self.table(&loaded, request),
             "v1/nearest" => self.nearest(&loaded, request),

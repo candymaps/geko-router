@@ -305,6 +305,7 @@ window.addEventListener("resize", resize);
   resize();
   try {
     const status = await call("v1/status");
+    if (!status.ready) throw new Error("the router has no graph yet");
     state.bounds = status.bounds; fit(status.bounds);
     $("stats").textContent = `${status.edges.toLocaleString()} edges, ${status.turns.toLocaleString()} turns loaded.`;
   } catch (e) {
