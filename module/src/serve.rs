@@ -13,6 +13,8 @@ use geko_module_sdk::module::{Request, Response};
 use crate::cch::{Cch, Scratch};
 use crate::graph::Graph;
 use crate::history::Bundled;
+use crate::profile::Mode;
+use crate::{isochrone, matching, trip};
 use crate::pipeline::{GRAPH_FILE, GRAPH_PART, HIERARCHY_FILE, HIERARCHY_PART, TRAFFIC_PART};
 use crate::route::{self, durations_cch};
 use crate::steps;
@@ -38,6 +40,16 @@ const MAX_TABLE_CELLS: usize = 1_000_000;
 const MAX_TABLE_POINTS: usize = 2_000;
 /// The hours of the historical profile kept customized: each takes the memory of a hierarchy.
 const MAX_HOURS_KEPT: usize = 2;
+/// The times an isochrone can have, and the longest of them, in seconds.
+const MAX_CONTOURS: usize = 4;
+const MAX_ISOCHRONE_S: u32 = 3600;
+/// The points of a trace, and how far from a point and among how many streets it looks.
+const MAX_TRACE_POINTS: usize = 2_000;
+const TRACE_RADIUS_M: f64 = 50.0;
+const MAX_TRACE_RADIUS_M: f64 = 200.0;
+const TRACE_STREETS: usize = 5;
+/// The points of a trip.
+const MAX_TRIP_POINTS: usize = 100;
 
 /// What answers at a moment: the weights of the turn graph and the hierarchy customized for them.
 /// Traffic makes a new one and swaps it in, so that requests in flight finish on the one they began with.
@@ -252,10 +264,18 @@ impl Places for Loaded {
 
 #[derive(Default)]
 pub struct Server {
+    mode: Mode,
     loaded: RwLock<Option<Arc<Loaded>>>,
     ok: AtomicU64,
     no_route: AtomicU64,
     bad_request: AtomicU64,
+}
+
+impl Server {
+    /// A server of the graphs of `mode`.
+    pub fn new(mode: Mode) -> Self {
+        Self { mode, ..Self::default() }
+    }
 }
 
 fn coordinate(value: &str) -> Option<(f64, f64)> {
@@ -303,6 +323,26 @@ fn table_request(request: &Request) -> std::result::Result<(Coordinates, Coordin
         Some(v) => v.as_f64().filter(|m| *m > 0.0 && *m <= MAX_SNAP_M).ok_or_else(|| format!("`snap_m` is a number of metres from 0 to {MAX_SNAP_M}"))?,
     };
     Ok((list("from")?, list("to")?, snap_m))
+}
+
+/// The points of a request, from a parameter that is repeated or from `{"points": [[lat, lon], ...]}`
+/// in its body: at least two, and up to `max`.
+fn list_request(request: &Request, name: &str, max: usize) -> std::result::Result<Coordinates, String> {
+    let list = if request.body.is_empty() {
+        points(request, name)?
+    } else {
+        let body: serde_json::Value = serde_json::from_slice(&request.body).map_err(|e| format!("the body is not JSON: {e}"))?;
+        let items = body["points"].as_array().ok_or("`points` is required, as a list of `[lat, lon]`")?;
+        let pair = |item: &serde_json::Value| match item.as_array().map(Vec::as_slice) {
+            Some([lat, lon]) => on_earth(lat.as_f64()?, lon.as_f64()?),
+            _ => None,
+        };
+        items.iter().map(pair).collect::<Option<_>>().ok_or("`points` has something that is not a coordinate `[lat, lon]`")?
+    };
+    if !(2..=max).contains(&list.len()) {
+        return Err(format!("{} points: from 2 to {max}", list.len()));
+    }
+    Ok(list)
 }
 
 /// The coordinates of a parameter that can be repeated, at least one.
@@ -377,7 +417,7 @@ impl Server {
     /// on the previous one. The topology of the hierarchy is read from `hierarchy`, or worked out again
     /// if the file is missing or is not of this graph.
     fn install(&self, graph: Graph, min_component: u32, hierarchy: Option<&std::path::Path>, bundled: Bundled) {
-        let turns = turn::build(&graph, &TurnProfile::default());
+        let turns = turn::build(&graph, &TurnProfile::of(self.mode));
         let snapper = Snapper::new(&graph, graph.without_ferries(scc::in_large_component(&turns, min_component)));
         let mut cch = match hierarchy.map(|path| Cch::read(path, &turns)) {
             Some(Ok(cch)) => cch,
@@ -407,10 +447,13 @@ impl Server {
             return Response::error(503, "the router has no graph yet").with_header("Retry-After", "60");
         };
         match request.route.as_str() {
-            "v1/status" => json(200, serde_json::json!({ "nodes": loaded.graph.nodes.len(), "edges": loaded.graph.edges.len(), "turns": loaded.free.arcs.len(), "bounds": loaded.bounds(), "traffic": loaded.traffic(&loaded.weighted()) })),
+            "v1/status" => json(200, serde_json::json!({ "profile": Mode::NAMES[self.mode as usize], "nodes": loaded.graph.nodes.len(), "edges": loaded.graph.edges.len(), "turns": loaded.free.arcs.len(), "bounds": loaded.bounds(), "traffic": loaded.traffic(&loaded.weighted()) })),
             "v1/route" => self.route(&loaded, request),
             "v1/table" => self.table(&loaded, request),
             "v1/nearest" => self.nearest(&loaded, request),
+            "v1/isochrone" => self.isochrone(&loaded, request),
+            "v1/match" => self.matched(&loaded, request),
+            "v1/trip" => self.trip(&loaded, request),
             route => Response::error(404, &format!("no route {route}")),
         }
     }
@@ -418,6 +461,135 @@ impl Server {
     fn bad(&self, message: &str) -> Response {
         self.bad_request.fetch_add(1, Ordering::Relaxed);
         Response::error(400, message)
+    }
+
+    /// What can be reached from `at` in each of `seconds`, as a GeoJSON polygon for each.
+    fn isochrone(&self, loaded: &Loaded, request: &Request) -> Response {
+        let at = match query(request, "at").map(|v| (v, coordinate(v))) {
+            None => return self.bad("`at` is required, as `lat,lon`"),
+            Some((v, None)) => return self.bad(&format!("`at` is not a coordinate `lat,lon`: {v:?}")),
+            Some((_, Some(at))) => at,
+        };
+        let times = query(request, "seconds").unwrap_or("").split(',').map(|s| s.trim().parse::<u32>().ok().filter(|t| (1..=MAX_ISOCHRONE_S).contains(t))).collect::<Option<Vec<u32>>>();
+        let Some(mut times) = times.filter(|t| (1..=MAX_CONTOURS).contains(&t.len())) else {
+            return self.bad(&format!("`seconds` is up to {MAX_CONTOURS} times separated by commas, each from 1 to {MAX_ISOCHRONE_S}"));
+        };
+        times.sort_unstable();
+        times.dedup();
+        let (snap_m, weighted) = match (snap_limit(request), loaded.asked(request)) {
+            (Ok(m), Ok(weighted)) => (m, weighted),
+            (Err(e), _) | (_, Err(e)) => return self.bad(&e),
+        };
+        let started = Instant::now();
+        let from = loaded.snapper.snap(&loaded.graph, at.0, at.1, snap_m);
+        let Some(origin) = snapped_json(&from) else {
+            self.no_route.fetch_add(1, Ordering::Relaxed);
+            return json(422, serde_json::json!({ "error": format!("no street within {snap_m} m of `at`") }));
+        };
+        let limits: Vec<i64> = times.iter().map(|t| *t as i64 * 10).collect();
+        let entered = isochrone::reach(&weighted.turns, &from, limits[limits.len() - 1]);
+        let rings = isochrone::contours(&loaded.graph, &weighted.turns, &entered, &limits);
+        let features: Vec<serde_json::Value> = times.iter().zip(rings).filter_map(|(seconds, ring)| {
+            Some(serde_json::json!({ "type": "Feature", "properties": { "seconds": seconds }, "geometry": { "type": "Polygon", "coordinates": [ring?] } }))
+        }).collect();
+        self.ok.fetch_add(1, Ordering::Relaxed);
+        json(200, serde_json::json!({ "type": "FeatureCollection", "features": features, "snapped": origin, "traffic": loaded.traffic(&weighted), "compute_us": started.elapsed().as_micros() as u64 }))
+    }
+
+    /// The roads a trace went along: a matching for each stretch that a route joins.
+    fn matched(&self, loaded: &Loaded, request: &Request) -> Response {
+        let trace = match list_request(request, "point", MAX_TRACE_POINTS) {
+            Ok(trace) => trace,
+            Err(e) => return self.bad(&e),
+        };
+        let radius = match query(request, "radius_m") {
+            None => TRACE_RADIUS_M,
+            Some(v) => match v.parse::<f64>().ok().filter(|m| *m > 0.0 && *m <= MAX_TRACE_RADIUS_M) {
+                Some(m) => m,
+                None => return self.bad(&format!("`radius_m` is a number of metres up to {MAX_TRACE_RADIUS_M}: {v:?}")),
+            },
+        };
+        let weighted = match loaded.asked(request) {
+            Ok(weighted) => weighted,
+            Err(e) => return self.bad(&e),
+        };
+        let started = Instant::now();
+        let coordinates: Vec<[f64; 2]> = trace.iter().map(|(lat, lon)| [*lat, *lon]).collect();
+        let streets: Vec<Vec<Vec<Snap>>> = trace.iter().map(|(lat, lon)| loaded.snapper.near(&loaded.graph, *lat, *lon, radius, TRACE_STREETS)).collect();
+        let found = loaded.with_scratch(&weighted, |scratch| matching::trace(&loaded.graph, &weighted.turns, &weighted.cch, scratch, &coordinates, &streets));
+        if found.is_empty() {
+            self.no_route.fetch_add(1, Ordering::Relaxed);
+            return json(404, serde_json::json!({ "error": format!("no street within {radius} m of the trace") }));
+        }
+        self.ok.fetch_add(1, Ordering::Relaxed);
+        let geometry = !matches!(query(request, "geometry"), Some("false" | "0"));
+        let matchings: Vec<serde_json::Value> = found.iter().map(|m| {
+            let mut body = serde_json::json!({
+                "points": m.points,
+                "snapped": m.snapped.iter().map(|p| [p[1], p[0]]).collect::<Vec<_>>(),
+                "duration_s": (m.duration_s * 10.0).round() / 10.0,
+                "distance_m": m.distance_m.round(),
+            });
+            if geometry {
+                body["geometry"] = serde_json::json!({ "type": "LineString", "coordinates": m.geometry.iter().map(|p| [p[1], p[0]]).collect::<Vec<_>>() });
+            }
+            body
+        }).collect();
+        json(200, serde_json::json!({ "matchings": matchings, "compute_us": started.elapsed().as_micros() as u64 }))
+    }
+
+    /// A good order to visit `point`s from the first, with the route of each leg.
+    fn trip(&self, loaded: &Loaded, request: &Request) -> Response {
+        let stops = match list_request(request, "point", MAX_TRIP_POINTS) {
+            Ok(stops) => stops,
+            Err(e) => return self.bad(&e),
+        };
+        let (snap_m, weighted) = match (snap_limit(request), loaded.asked(request)) {
+            (Ok(m), Ok(weighted)) => (m, weighted),
+            (Err(e), _) | (_, Err(e)) => return self.bad(&e),
+        };
+        let round = !matches!(query(request, "round"), Some("false" | "0"));
+        let started = Instant::now();
+        let snapped: Vec<Vec<Snap>> = stops.iter().map(|(lat, lon)| loaded.snapper.snap(&loaded.graph, *lat, *lon, snap_m)).collect();
+        if let Some(lost) = snapped.iter().position(Vec::is_empty) {
+            self.no_route.fetch_add(1, Ordering::Relaxed);
+            return json(422, serde_json::json!({ "error": format!("no street within {snap_m} m of the point {lost}") }));
+        }
+        let mut durations = loaded.with_scratch(&weighted, |scratch| durations_cch(&weighted.turns, &weighted.cch, scratch, &snapped, &snapped));
+        (0..durations.len()).for_each(|i| durations[i][i] = Some(0.0));
+        let Some(mut order) = trip::order(&durations, round) else {
+            self.no_route.fetch_add(1, Ordering::Relaxed);
+            return json(404, serde_json::json!({ "error": "no route joins all the points" }));
+        };
+        let visits = order.clone();
+        if round {
+            order.push(order[0]);
+        }
+        let geometry = !matches!(query(request, "geometry"), Some("false" | "0"));
+        let mut legs = Vec::with_capacity(order.len());
+        let (mut duration_s, mut distance_m) = (0.0, 0.0);
+        for pair in order.windows(2) {
+            let (from, to) = (&snapped[pair[0]], &snapped[pair[1]]);
+            let Some(found) = loaded.routes(&weighted, from, to, 0).into_iter().next() else {
+                self.no_route.fetch_add(1, Ordering::Relaxed);
+                return json(404, serde_json::json!({ "error": "no route joins all the points" }));
+            };
+            duration_s += found.duration_s;
+            distance_m += found.distance_m;
+            let mut leg = loaded.route_json(&weighted, &found, geometry, false);
+            leg["from"] = pair[0].into();
+            leg["to"] = pair[1].into();
+            legs.push(leg);
+        }
+        self.ok.fetch_add(1, Ordering::Relaxed);
+        json(200, serde_json::json!({
+            "order": visits,
+            "duration_s": (duration_s * 10.0_f64).round() / 10.0,
+            "distance_m": distance_m.round(),
+            "legs": legs,
+            "traffic": loaded.traffic(&weighted),
+            "compute_us": started.elapsed().as_micros() as u64,
+        }))
     }
 
     fn route(&self, loaded: &Loaded, request: &Request) -> Response {
@@ -569,7 +741,7 @@ mod tests {
     fn server() -> Server {
         use crate::graph::Builder;
         use crate::osm::Element;
-        use crate::profile::Car;
+        use crate::profile::Vehicle;
         let node = |id, lat, lon| Element::Node { id, lat, lon, tags: Vec::new() };
         let way = |id, refs: &[i64]| Element::Way { id, refs: refs.to_vec(), tags: vec![("highway".into(), "residential".into())] };
         let elements = [
@@ -583,12 +755,73 @@ mod tests {
             way(12, &[4, 5]),
             way(13, &[5, 3]),
         ];
-        let mut builder = Builder::new(Car::from_road_classes("[free_flow_kmh]\nresidential = 36\n").unwrap());
+        let mut builder = Builder::new(Vehicle::from_road_classes("[free_flow_kmh]\nresidential = 36\n").unwrap());
         elements.iter().for_each(|e| builder.first_pass(e));
         elements.iter().for_each(|e| builder.second_pass(e));
         let server = Server::default();
         server.install(builder.finish(), 1, None, Bundled::default());
         server
+    }
+
+    #[test]
+    fn an_isochrone_grows_with_the_time() {
+        let server = server();
+        let (status, body) = ask(&server, "v1/isochrone", &[("at", "0,-0.0005"), ("seconds", "60,5")]);
+        assert_eq!(status, 200, "{body}");
+        let features = body["features"].as_array().unwrap();
+        assert_eq!(features.iter().map(|f| f["properties"]["seconds"].as_u64().unwrap()).collect::<Vec<_>>(), [5, 60]);
+        let ring = |f: &serde_json::Value| f["geometry"]["coordinates"][0].as_array().unwrap().clone();
+        assert_eq!(ring(&features[1]).first(), ring(&features[1]).last());
+        let top = |f: &serde_json::Value| ring(f).iter().map(|p| p[1].as_f64().unwrap()).fold(f64::MIN, f64::max);
+        assert!(top(&features[1]) > top(&features[0]), "{body}");
+        assert_eq!(ask(&server, "v1/isochrone", &[("at", "0,0")]).0, 400);
+        assert_eq!(ask(&server, "v1/isochrone", &[("at", "0,0"), ("seconds", "99999")]).0, 400);
+        assert_eq!(ask(&server, "v1/isochrone", &[("at", "40,3"), ("seconds", "60")]).0, 422);
+    }
+
+    #[test]
+    fn a_trace_follows_its_streets() {
+        let server = server();
+        let trace = [("point", "0.00002,-0.0009"), ("point", "0.00002,-0.0004"), ("point", "0.0004,0.00002"), ("point", "0.0009,0.00002")];
+        let (status, body) = ask(&server, "v1/match", &trace);
+        assert_eq!(status, 200, "{body}");
+        let matchings = body["matchings"].as_array().unwrap();
+        assert_eq!(matchings.len(), 1, "{body}");
+        assert_eq!(matchings[0]["points"], serde_json::json!([0, 1, 2, 3]));
+        let distance = matchings[0]["distance_m"].as_f64().unwrap();
+        assert!((190.0..=210.0).contains(&distance), "{body}");
+        assert_eq!(ask(&server, "v1/match", &[("point", "0,0")]).0, 400, "a point is not a trace");
+        assert_eq!(ask(&server, "v1/match", &[("point", "40,3"), ("point", "41,3")]).0, 404);
+    }
+
+    #[test]
+    fn a_point_with_nothing_near_splits_nothing_and_what_has_not_moved_is_left_out() {
+        let server = server();
+        let (_, body) = ask(&server, "v1/match", &[("point", "0,-0.0009"), ("point", "0.00001,-0.0009"), ("point", "40,3"), ("point", "0,-0.0004")]);
+        assert_eq!(body["matchings"][0]["points"], serde_json::json!([0, 3]), "{body}");
+    }
+
+    #[test]
+    fn a_trip_visits_every_point_and_comes_back() {
+        let server = server();
+        let stops = [("point", "0,-0.0009"), ("point", "0,0.0009"), ("point", "0,-0.0003")];
+        let (status, body) = ask(&server, "v1/trip", &stops);
+        assert_eq!(status, 200, "{body}");
+        assert_eq!(body["order"], serde_json::json!([0, 2, 1]));
+        assert_eq!(body["legs"].as_array().unwrap().len(), 3);
+        let (_, one_way) = ask(&server, "v1/trip", &[stops[0], stops[1], stops[2], ("round", "false")]);
+        assert_eq!(one_way["legs"].as_array().unwrap().len(), 2);
+        assert!(one_way["duration_s"].as_f64() < body["duration_s"].as_f64());
+        assert_eq!(ask(&server, "v1/trip", &[stops[0], ("point", "40,3")]).0, 422);
+    }
+
+    #[test]
+    fn a_long_list_of_points_comes_in_the_body() {
+        let server = server();
+        let request = Request { route: "v1/trip".into(), body: br#"{"points": [[0, -0.0009], [0, 0.0009]]}"#.to_vec(), ..Default::default() };
+        assert_eq!(server.handle(&request).status, 200);
+        let bad = Request { route: "v1/trip".into(), body: br#"{"points": [[0, 500], [0, 0]]}"#.to_vec(), ..Default::default() };
+        assert_eq!(server.handle(&bad).status, 400);
     }
 
     fn get(server: &Server, query: &[(&str, &str)]) -> (u16, serde_json::Value) {

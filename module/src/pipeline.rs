@@ -28,7 +28,7 @@ use crate::extracts::{self, Catalog};
 use crate::graph::{Builder, GeoBox, Graph, Roads};
 use crate::history::{self, Bundled, Holidays, Profile, Sums};
 use crate::pack::{Packs, Source};
-use crate::profile::Car;
+use crate::profile::Vehicle;
 use crate::scc;
 use crate::sensors;
 use crate::serve::MIN_COMPONENT;
@@ -276,7 +276,7 @@ fn jobs(setup: &Setup, catalog: &Catalog) -> Result<BTreeMap<String, Job>> {
 }
 
 pub fn plan(setup: &Setup, dl: &dyn Downloader) -> String {
-    let mut out = String::from("Router: the road graph of the scope, for cars, from OpenStreetMap\n");
+    let mut out = format!("Router: the road graph of the scope, for the profile {}, from OpenStreetMap\n", setup.config.profiles.default);
     if setup.scope.is_empty() {
         out.push_str("  nothing to build: the scope is empty\n");
         return out;
@@ -369,7 +369,7 @@ fn fragment_stage(setup: &Setup, fetched: &Fetched, (id, path, job): &(String, P
     let key = Key::new("fragment")
         .add("code", FRAGMENT_CODE)
         .add("profile", &setup.config.profiles.default)
-        .add("road-classes", &pack.road_classes)
+        .add("road-classes", pack.classes(&setup.config.profiles.default))
         .add("clip", &clip)
         .inputs(std::slice::from_ref(path), &fetched.identities)?
         .finish();
@@ -377,7 +377,7 @@ fn fragment_stage(setup: &Setup, fetched: &Fetched, (id, path, job): &(String, P
         return Ok((stamp.output, true));
     }
     fresh_dir(&dir)?;
-    let mut builder = Builder::clipped(Car::from_road_classes(&pack.road_classes)?, job.clip.clone());
+    let mut builder = Builder::clipped(Vehicle::of(setup.config.mode(), pack.classes(&setup.config.profiles.default))?, job.clip.clone());
     osm::read_pbf(path, |e| builder.first_pass(&e))?;
     osm::read_pbf(path, |e| builder.second_pass(&e))?;
     let fragment = builder.fragment();
@@ -456,7 +456,7 @@ fn traffic_stage(setup: &Setup, dl: &dyn Downloader, graph_digest: &str, graph_f
     }
     fresh_dir(&dir)?;
     let graph = graph_io::read(graph_file)?;
-    let turns = turn::build(&graph, &TurnProfile::default());
+    let turns = turn::build(&graph, &TurnProfile::of(setup.config.mode()));
     let snapper = Snapper::new(&graph, graph.without_ferries(scc::in_large_component(&turns, MIN_COMPONENT)));
     let mut bundled = Bundled::default();
     let mut matched_sensors = 0;
@@ -534,7 +534,7 @@ pub fn build(setup: &Setup, dl: &dyn Downloader, force: bool) -> Result<Built> {
     let (nodes, edges) = (count(&stamp, "nodes"), count(&stamp, "edges"));
 
     let hierarchy = setup.hierarchy_dir();
-    let key = Key::new("hierarchy").add("code", HIERARCHY_CODE).add("graph", &stamp.output).finish();
+    let key = Key::new("hierarchy").add("code", HIERARCHY_CODE).add("profile", &setup.config.profiles.default).add("graph", &stamp.output).finish();
     let (arcs, hierarchy_reused) = match incremental::up_to_date(&hierarchy, &key).filter(|_| !force) {
         Some(stamp) => (count(&stamp, "arcs"), true),
         None => {
@@ -543,7 +543,7 @@ pub fn build(setup: &Setup, dl: &dyn Downloader, force: bool) -> Result<Built> {
                 None => graph_io::read(&dir.join(GRAPH_FILE))?,
             };
             fresh_dir(&hierarchy)?;
-            let turns = turn::build(&graph, &TurnProfile::default());
+            let turns = turn::build(&graph, &TurnProfile::of(setup.config.mode()));
             Cch::topology(&turns).write(&turns, &hierarchy.join(HIERARCHY_FILE))?;
             incremental::seal(&hierarchy, key, &[], serde_json::json!({ "arcs": turns.arcs.len() }))?;
             (turns.arcs.len(), false)

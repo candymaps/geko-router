@@ -273,7 +273,7 @@ mod tests {
     use crate::graph::Builder;
     use crate::osm::Element;
     use crate::pack::CountryPack;
-    use crate::profile::Car;
+    use crate::profile::Vehicle;
 
     fn spec() -> Spec {
         let pack = CountryPack::load(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../countries/es")).unwrap();
@@ -331,7 +331,7 @@ mod tests {
         let node = |id, lat, lon| Element::Node { id, lat, lon, tags: Vec::new() };
         let way = |id, refs: &[i64]| Element::Way { id, refs: refs.to_vec(), tags: vec![("highway".into(), "residential".into()), ("oneway".into(), "yes".into())] };
         let elements = [node(1, 40.4, -3.7), node(2, 40.4, -3.698), node(3, 40.41, -3.7), node(4, 40.412, -3.7), way(10, &[1, 2]), way(11, &[3, 4])];
-        let mut builder = Builder::new(Car::from_road_classes("[free_flow_kmh]\nresidential = 36\n").unwrap());
+        let mut builder = Builder::new(Vehicle::from_road_classes("[free_flow_kmh]\nresidential = 36\n").unwrap());
         elements.iter().for_each(|e| builder.first_pass(e));
         elements.iter().for_each(|e| builder.second_pass(e));
         builder.finish()

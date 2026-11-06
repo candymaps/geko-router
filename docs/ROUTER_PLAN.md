@@ -1,6 +1,6 @@
 # Módulo `geko-router`: plan
 
-Estado (2026-11-06): en desarrollo, con el código en `dev` y `main` de `candymaps/geko-router`. Bloques A, B, C y D hechos, salvo lo que depende de otros (puntos 19 y 28), y los packs `es` y `lu` publicados con la clave de firma nueva (`pack-2`; `es` pasa a `pack-3` con el tráfico). El módulo se publica en cuanto `publish.yml` llegue a `main` (punto 34). Lo hecho y lo que falta está en «Seguimiento». Las decisiones abiertas están al final.
+Estado (2026-11-06): en desarrollo, con el código en `dev` y `main` de `candymaps/geko-router`. Bloques A, B, C, D y E hechos, salvo lo que depende de otros (puntos 19 y 28), y los packs `es` y `lu` publicados con la clave de firma nueva (`pack-2`; `es` pasa a `pack-3` con el tráfico). El módulo se publica en cuanto `publish.yml` llegue a `main` (punto 34). Lo hecho y lo que falta está en «Seguimiento». Las decisiones abiertas están al final.
 
 ## Objetivo
 
@@ -203,7 +203,7 @@ Lista de trabajo, en el orden previsto. Al cerrar un punto se marca aquí, con s
 | B. API de la fase 1 | 5 de 5 | |
 | C. Packs de país | 6 de 6 | |
 | D. Tráfico completo | 8 de 10 | 19 (hora punta en vivo) y 28 (escribir a la DGT) |
-| E. Funciones de la fase posterior | 0 de 4 | 29 a 32 |
+| E. Funciones de la fase posterior | 4 de 4 | Ninguno |
 | F. Publicación | 3 de 5 | 34 y 36, a falta de mergear |
 
 **Hecho (2026-11-04):** grafo con giros, restricciones y ferris; CCH con customización en caliente; `v1/route` con pasos y alternativas, `v1/nearest`, `v1/table` (etiquetas muchos-a-muchos, 1.000.000 de celdas como máximo) y `v1/status`; `openapi.yaml` y demo; packs `es` y `lu` leídos en tiempo de ejecución, con etapas por extracto; tráfico en vivo de los sensores de Madrid, opcional y desactivado por defecto, con `traffic.coverage`.
@@ -359,10 +359,18 @@ Comprobado el 2026-11-04 con el binario de `geko` y la `.so` del módulo (Madrid
 
 ### E. Funciones de la fase posterior
 
-- [ ] 29. `match` (map matching).
-- [ ] 30. Isócronas.
-- [ ] 31. `trip`.
-- [ ] 32. Perfiles de bici, a pie y camión.
+- [x] 29. `match` (map matching): modelo oculto de Markov de Newson y Krumm, con hasta 5 calles por punto y rutas de la CCH entre ellas, por GET y POST. Donde ninguna ruta une dos puntos, acaba un tramo y empieza otro.
+  - Prueba del 2026-11-06 en Madrid: 95 puntos de una ruta de 7.774 m, desplazados unos metros, en 39 ms. Salen 7.729 m en un solo tramo. Es una traza sintética: faltan trazas GPS reales.
+  - `SIGMA_M` y `BETA_M` son los valores de partida, sin calibrar.
+- [x] 30. Isócronas: Dijkstra acotado sobre el grafo de giros y contorno de las celdas de una rejilla, en GeoJSON. Hasta 4 tiempos de hasta una hora.
+  - Madrid, desde Sol, 2026-11-06: 5 min en 5 ms, 15 y 30 min en 0,2 s, 60 min en 0,27 s.
+  - Se da el anillo de mayor área: no dice los huecos ni las islas aparte. No se ha comparado con otro motor.
+- [x] 31. `trip`: matriz de la CCH, vecino más cercano y 2-opt, hasta 100 puntos, con `round=false` para no volver. Heurística: no siempre da el mejor orden. 8 puntos de Madrid en 6 ms.
+- [x] 32. Perfiles de bici, a pie y camión, en `[profiles] default`, con `data/road-classes-<perfil>.toml` en los packs `es` y `lu` (que pasa a `pack-3`).
+  - **Un perfil por bundle**, no `?profile=` por petición: cada perfil es otro grafo y otra jerarquía, y servir varios en un proceso multiplica la memoria. Para varios perfiles, una instancia por perfil. Si hace falta en un solo proceso, es trabajo aparte.
+  - Luxemburgo, 2026-11-06, misma ruta: coche 7,07 km en 606 s, camión 7,07 km en 623 s, bici 5,09 km en 1.180 s, a pie 4,85 km en 3.523 s. El grafo a pie tiene 3,2 veces las aristas del de coche.
+  - Velocidades y costes de giro provisionales, sin tiempos reales. Sin pendientes para bici y a pie. El camión mira `hgv`, `maxheight`, `maxweight` y `maxspeed:hgv`, con un vehículo de 4 m y 18 t fijado en el pack; una limitación en unidades que no sean métricas no se aplica.
+  - A pie no se aplican las restricciones de giro. Bici y a pie no leen tráfico.
 
 ### F. Publicación
 

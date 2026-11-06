@@ -100,7 +100,7 @@ mod tests {
     use super::*;
     use crate::graph::Builder;
     use crate::osm::{Element, Tags};
-    use crate::profile::Car;
+    use crate::profile::Vehicle;
     use crate::snap::Snapper;
     use crate::turn::{self, TurnProfile};
 
@@ -129,7 +129,7 @@ mod tests {
             way(11, &[3, 4], "Calle Sol"),
             way(12, &[3, 5], "Calle Luna"),
         ];
-        let mut builder = Builder::new(Car::from_road_classes("[free_flow_kmh]
+        let mut builder = Builder::new(Vehicle::from_road_classes("[free_flow_kmh]
 residential = 36
 ").unwrap());
         elements.iter().for_each(|e| builder.first_pass(e));

@@ -22,7 +22,8 @@ Todo lo propio de un país vive en su pack, `countries/<país>/`: las velocidade
 countries/<país>/
 ├── pack.toml               # country, version, profiles, timezone y, si hace falta, [crs]
 ├── data/
-│   ├── road-classes.toml   # velocidad por clase de vía y maxspeed_factor
+│   ├── road-classes.toml   # velocidad por clase de vía y maxspeed_factor, del coche
+│   ├── road-classes-<perfil>.toml  # los demás perfiles de pack.toml: truck, bike, foot
 │   ├── calendar.toml       # festivos: fixed (MM-DD) y easter_relative (días desde Pascua)
 │   ├── regions.toml        # opcional: regiones que puede nombrar el ámbito, con su parent
 │   └── region-boxes.tsv    # opcional: una caja por partición (código y cuatro números, con tabuladores)

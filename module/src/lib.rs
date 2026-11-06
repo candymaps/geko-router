@@ -5,7 +5,9 @@
 
 mod config;
 pub mod history;
+pub mod isochrone;
 pub mod live;
+pub mod matching;
 pub mod sensors;
 mod extracts;
 pub mod cch;
@@ -22,6 +24,7 @@ mod serve;
 pub mod snap;
 pub mod steps;
 pub mod traffic;
+pub mod trip;
 pub mod turn;
 pub mod utm;
 
@@ -66,6 +69,11 @@ impl Module for RouterModule {
                 Route { method: Method::Get, path: "v1/nearest".into(), pool: true, public: false },
                 Route { method: Method::Get, path: "v1/table".into(), pool: true, public: false },
                 Route { method: Method::Post, path: "v1/table".into(), pool: true, public: false },
+                Route { method: Method::Get, path: "v1/isochrone".into(), pool: true, public: false },
+                Route { method: Method::Get, path: "v1/match".into(), pool: true, public: false },
+                Route { method: Method::Post, path: "v1/match".into(), pool: true, public: false },
+                Route { method: Method::Get, path: "v1/trip".into(), pool: true, public: false },
+                Route { method: Method::Post, path: "v1/trip".into(), pool: true, public: false },
             ],
             openapi: Some("openapi.yaml".into()),
             attribution: Some(self.attribution()),
@@ -132,7 +140,8 @@ impl RouterModule {
     fn new(context: Context) -> Result<Self> {
         let config = config::Config::parse(&context.config, &context.config_file)?;
         let packs = pack::Packs::new(&context.data_dir);
-        Ok(Self { setup: Setup { config, scope: context.scope, data_dir: context.data_dir, data: context.data, packs }, server: serve::Server::default(), poller: Mutex::new(None), deferred: AtomicBool::new(false), pending: Mutex::new(None) })
+        let mode = config.mode();
+        Ok(Self { setup: Setup { config, scope: context.scope, data_dir: context.data_dir, data: context.data, packs }, server: serve::Server::new(mode), poller: Mutex::new(None), deferred: AtomicBool::new(false), pending: Mutex::new(None) })
     }
 
     fn load_from(&self, root: &Path) -> Result<()> {
@@ -208,7 +217,7 @@ mod tests {
     fn bundle(root: &Path) {
         use crate::graph::Builder;
         use crate::osm::Element;
-        let mut builder = Builder::new(crate::profile::Car::from_road_classes("[free_flow_kmh]\nprimary = 90\n").unwrap());
+        let mut builder = Builder::new(crate::profile::Vehicle::from_road_classes("[free_flow_kmh]\nprimary = 90\n").unwrap());
         let road = [
             Element::Node { id: 1, lat: 0.0, lon: 0.0, tags: vec![] },
             Element::Node { id: 2, lat: 0.0, lon: 0.01, tags: vec![] },

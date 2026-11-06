@@ -44,7 +44,7 @@ fn of_kinds(setup: &Setup, kinds: &[&str]) -> Vec<Source> {
 /// downloaded (not offline) and the scope holds what a source measures.
 pub fn wanted(setup: &Setup) -> Vec<Source> {
     let traffic = &setup.config.traffic;
-    if !(traffic.enabled && traffic.live) || setup.data.offline {
+    if !(traffic.enabled && traffic.live) || setup.data.offline || !setup.config.mode().has_traffic() {
         return Vec::new();
     }
     of_kinds(setup, &[sensors::KIND, situations::KIND])
@@ -52,7 +52,7 @@ pub fn wanted(setup: &Setup) -> Vec<Source> {
 
 /// The sources the build learns the usual speeds from, with traffic on.
 pub fn wanted_history(setup: &Setup) -> Vec<Source> {
-    if !setup.config.traffic.enabled {
+    if !setup.config.traffic.enabled || !setup.config.mode().has_traffic() {
         return Vec::new();
     }
     of_kinds(setup, &[history::KIND])
@@ -60,7 +60,7 @@ pub fn wanted_history(setup: &Setup) -> Vec<Source> {
 
 /// The sources of sensors the build matches: with traffic on, those of the scope, polled or not.
 pub fn wanted_sensors(setup: &Setup) -> Vec<Source> {
-    if !setup.config.traffic.enabled {
+    if !setup.config.traffic.enabled || !setup.config.mode().has_traffic() {
         return Vec::new();
     }
     of_kinds(setup, &[sensors::KIND])
@@ -330,6 +330,7 @@ mod tests {
     fn the_history_is_of_a_build_with_traffic_on_and_of_the_land_it_measures() {
         let history = |config, regions: &[&str]| wanted_history(&setup(config, "ES", regions, false)).into_iter().map(|s| s.name).collect::<Vec<_>>();
         assert!(history("", &[]).is_empty());
+        assert!(history("[traffic]\nenabled = true\n[profiles]\ndefault = \"bike\"", &[]).is_empty(), "a jam does not stop a bicycle");
         assert_eq!(history("[traffic]\nenabled = true\nlive = false", &[]), ["madrid-history"]);
         assert!(history("[traffic]\nenabled = true", &["ES-IB"]).is_empty());
     }

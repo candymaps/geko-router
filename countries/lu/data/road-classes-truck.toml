@@ -1,0 +1,24 @@
+# What a truck does on average. Provisional, without real travel times to calibrate against: the
+# speeds of the car, capped at what a truck may do, and only the roads it can use.
+
+maxspeed_factor = 0.8
+max_kmh = 80
+
+# What it measures: a way that limits it to less is not for it (`maxheight`, `maxweight`).
+height_m = 4.0
+weight_t = 18.0
+
+[free_flow_kmh]
+motorway = 80
+motorway_link = 40
+trunk = 70
+trunk_link = 35
+primary = 55
+primary_link = 25
+secondary = 45
+secondary_link = 20
+tertiary = 35
+tertiary_link = 15
+unclassified = 20
+residential = 15
+service = 10

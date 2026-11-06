@@ -19,7 +19,7 @@ use std::path::Path;
 use geko_module_router::cch::{Cch, Scratch};
 use geko_module_router::graph::{Builder, Graph, Roads};
 use geko_module_router::pack::CountryPack;
-use geko_module_router::profile::Car;
+use geko_module_router::profile::Vehicle;
 use geko_module_router::route::route_cch;
 use geko_module_router::scc::in_large_component;
 use geko_module_router::snap::{Snap, Snapper};
@@ -77,7 +77,7 @@ fn graph(pack: &CountryPack, data: &Path, set: &Set) -> Result<Graph, Box<dyn st
     let mut roads = Roads::default();
     for extract in &set.extracts {
         let path = data.join(extract);
-        let mut builder = Builder::new(Car::from_road_classes(&pack.road_classes)?);
+        let mut builder = Builder::new(Vehicle::from_road_classes(&pack.road_classes)?);
         osm::read_pbf(&path, |e| builder.first_pass(&e))?;
         osm::read_pbf(&path, |e| builder.second_pass(&e))?;
         roads.add(builder.fragment());

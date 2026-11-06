@@ -19,6 +19,9 @@ What it serves, under `/router/`:
 - **Routes** (`/router/v1/route`): the fastest way between two points, with its time, length and line, its steps (`steps=true`) and up to three alternatives (`alternatives=n`). `traffic=none|historical|live` and `depart_at` (RFC 3339) say what the weights are, here and in matrices.
 - **Matrices** (`/router/v1/table`): times and distances from many points to many, up to 1,000,000 cells and 2,000 points a side, by `GET` or by `POST`. A matrix of 1,000×1,000 takes less than half a second in Baleares.
 - **The nearest street** (`/router/v1/nearest`).
+- **Isochrones** (`/router/v1/isochrone`): what can be reached from a point in up to four times, as GeoJSON polygons.
+- **Map matching** (`/router/v1/match`): the roads a trace of up to 2,000 points went along.
+- **Trips** (`/router/v1/trip`): a good order to visit up to 100 points, and its routes. It is a heuristic, not always the best order.
 - **Status** (`/router/v1/status`), the **API** (`/router/openapi.yaml`, also listed in `/docs` of geko) and a **demo** (`/router/`): click on the map for the start and the end.
 
 On top of the same foundation as the rest of geko:
@@ -48,7 +51,7 @@ mirror = "auto"             # Geofabrik, or the URL of a mirror with its layout 
 registry = "ghcr.io/candymaps/geko-router/countries"    # where the country packs are, without the country
 
 [profiles]
-default = "car"             # the profile of the graph; the only one there is
+default = "car"             # the profile of the graph: car, truck, bike or foot. One for each bundle: for several, an instance of geko for each
 
 [traffic]
 enabled = false             # true: match the sensors and learn the usual speeds in the build (about 200 MB of downloads in Madrid)

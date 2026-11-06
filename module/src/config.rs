@@ -8,6 +8,7 @@ use geko_module_sdk::{GekoError, Result};
 use serde::Deserialize;
 
 use crate::pack;
+use crate::profile::Mode;
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -52,7 +53,7 @@ impl Default for PacksConfig {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ProfilesConfig {
-    /// The profile the graph is built for. It changes what is generated.
+    /// The profile the graph is built for, one for each bundle. It changes what is generated.
     pub default: String,
 }
 
@@ -93,11 +94,16 @@ impl Default for ServeConfig {
 }
 
 impl Config {
+    /// The profile of the graph, which `parse` checked.
+    pub fn mode(&self) -> Mode {
+        Mode::parse(&self.profiles.default).unwrap_or_default()
+    }
+
     pub fn parse(text: &str, file: &str) -> Result<Self> {
         let file = if file.is_empty() { "geko-router.toml" } else { file };
         let config: Self = toml::from_str(text).map_err(|e| GekoError::Config(format!("{file}: {e}")))?;
-        if config.profiles.default != "car" {
-            return Err(GekoError::Config(format!("{file}: [profiles] default = {:?}: the only profile there is is \"car\"", config.profiles.default)));
+        if Mode::parse(&config.profiles.default).is_none() {
+            return Err(GekoError::Config(format!("{file}: [profiles] default = {:?}: the profiles are {}", config.profiles.default, Mode::NAMES.join(", "))));
         }
         if config.packs.registry.is_empty() {
             return Err(GekoError::Config(format!("{file}: [packs] registry is empty")));
@@ -139,7 +145,7 @@ mod tests {
 
     #[test]
     fn bad_options_name_the_file_and_the_key() {
-        for (text, word) in [("[traffic]\nenable = true", "enable"), ("[traffic]\nlive = 3", "live"), ("[profiles]\ndefault = \"bike\"", "default"), ("[packs]\nregistry = \"\"", "registry"), ("[packs]\nurl = \"x\"", "url"), ("[serve]\ncountries = []", "countries"), ("[traffic.madrid]\nenabled = true", "madrid")] {
+        for (text, word) in [("[traffic]\nenable = true", "enable"), ("[traffic]\nlive = 3", "live"), ("[profiles]\ndefault = \"plane\"", "default"), ("[packs]\nregistry = \"\"", "registry"), ("[packs]\nurl = \"x\"", "url"), ("[serve]\ncountries = []", "countries"), ("[traffic.madrid]\nenabled = true", "madrid")] {
             let error = Config::parse(text, "geko-router.toml").unwrap_err().to_string();
             assert!(error.contains("geko-router.toml") && error.contains(word), "{error}");
         }

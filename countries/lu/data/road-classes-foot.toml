@@ -1,0 +1,20 @@
+# Walking speed, on flat ground. Provisional. A road with no pavement is not told from one with it:
+# OSM rarely says, and those in this list are walked on.
+
+[free_flow_kmh]
+footway = 5
+path = 4.5
+pedestrian = 5
+steps = 2
+track = 4.5
+cycleway = 5
+living_street = 5
+residential = 5
+service = 5
+unclassified = 5
+tertiary = 5
+tertiary_link = 5
+secondary = 5
+secondary_link = 5
+primary = 5
+primary_link = 5
