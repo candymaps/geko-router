@@ -415,7 +415,7 @@ mod tests {
     use super::*;
     use crate::graph::Builder;
     use crate::osm::{Element, Tags};
-    use crate::profile::Car;
+    use crate::profile::Vehicle;
     use crate::snap::Snapper;
     use crate::turn::{self, TurnProfile};
 
@@ -434,7 +434,7 @@ mod tests {
     }
 
     fn network(elements: &[Element]) -> (Graph, TurnGraph) {
-        let mut builder = Builder::new(Car::from_road_classes("[free_flow_kmh]\nresidential = 36\n").unwrap());
+        let mut builder = Builder::new(Vehicle::from_road_classes("[free_flow_kmh]\nresidential = 36\n").unwrap());
         elements.iter().for_each(|e| builder.first_pass(e));
         elements.iter().for_each(|e| builder.second_pass(e));
         let graph = builder.finish();

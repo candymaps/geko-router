@@ -20,8 +20,10 @@ regions = ["ES-M"]
 refresh_secs = 300
 ttl_secs = 900
 
-# One `<pm>` per measurement point under the root `<pms>`.
+# One `<pm>` per measurement point under the root `<pms>`. Its direction is in its description, as
+# `A-B`, travelling from A to B: `directions` says the degrees of each name.
 [record]
+directions = { N = 0, NE = 45, E = 90, SE = 135, S = 180, SO = 225, O = 270, NO = 315 }
 element = "pm"
 id = "idelem"
 description = "descripcion"
@@ -44,14 +46,15 @@ saturation_intensity = "intensidadSat"
 
 # Matching of each point to the edges of the graph, done once when the bundle is built.
 [matching]
-max_distance_m = 30
+max_distance_m = 40
+max_turn_deg = 70
 road_classes = ["motorway", "trunk", "primary", "secondary", "tertiary", "unclassified", "residential"]
 
-# Fraction of the free-flow speed that each service level gives. Provisional, and published so: it
-# is still to be calibrated against the historical dataset of the same portal (docs/ROUTER_PLAN.md,
-# point 20).
+# Fraction of the free-flow speed that each service level gives, measured on the sensors that say
+# their speed, those of the M-30 and its kind, in October 2026 (docs/ROUTER_PLAN.md, point 20). A city
+# street loses more at its junctions, which no sensor measures.
 [service_level_factor]
 0 = 1.0
-1 = 0.7
-2 = 0.45
-3 = 0.25
+1 = 0.97
+2 = 0.88
+3 = 0.78

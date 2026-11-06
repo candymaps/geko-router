@@ -58,7 +58,7 @@ fn a_box_holds_its_capital() {
 #[test]
 fn the_sources_are_those_of_the_licences_decided() {
     let pack = pack();
-    assert_eq!(pack.sources.keys().collect::<Vec<_>>(), ["dgt-incidents", "madrid-sensors"]);
+    assert_eq!(pack.sources.keys().collect::<Vec<_>>(), ["dgt-incidents", "madrid-history", "madrid-sensors"]);
     assert!(pack.sources["madrid-sensors"].enabled);
     assert_eq!(pack.sources["madrid-sensors"].license.name, "CC BY 4.0");
     assert!(!pack.sources["dgt-incidents"].enabled, "until the DGT clarifies its licence (docs/ROUTER_PLAN.md, point 28)");

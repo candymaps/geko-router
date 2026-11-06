@@ -17,9 +17,10 @@ catalog_url = "https://nap.dgt.es/en/dataset/incidencias-dgt-datex2-v3-7"
 url = "https://nap.dgt.es/datex2/v3/dgt/SituationPublication/datex2_v37.xml"
 accept_encoding = "gzip"
 
-# The feed sets `Cache-Control: max-age=39` and has no `ETag`: poll once a minute.
-refresh_secs = 60
-ttl_secs = 300
+# The feed changes every minute, but the client of the host does not ask for gzip, and each reading
+# is 3.5 to 7 MB: once every 5 minutes is about 1.5 GB a day.
+refresh_secs = 300
+ttl_secs = 900
 
 # Only records with this validity status are applied.
 validity_status = "active"

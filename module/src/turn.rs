@@ -10,6 +10,7 @@
 use std::collections::HashMap;
 
 use crate::graph::{Edge, Graph, Restriction, RestrictionKind};
+use crate::profile::Mode;
 
 /// What a turn costs, in seconds. Provisional: calibrated against the golden routes before the
 /// first release of the module.
@@ -31,6 +32,16 @@ impl Default for TurnProfile {
 }
 
 impl TurnProfile {
+    /// What a turn costs each of them. Provisional, as the rest: on foot only a crossing costs.
+    pub fn of(mode: Mode) -> Self {
+        match mode {
+            Mode::Car => Self::default(),
+            Mode::Truck => Self { u_turn_s: 60.0, left_s: 9.0, right_s: 6.0, ..Self::default() },
+            Mode::Bike => Self { u_turn_s: 5.0, left_s: 2.0, right_s: 1.0, ..Self::default() },
+            Mode::Foot => Self { u_turn_s: 0.0, left_s: 0.0, right_s: 0.0, ..Self::default() },
+        }
+    }
+
     /// `angle_deg` is positive to the right and negative to the left.
     pub fn cost_s(&self, angle_deg: f32, u_turn: bool, signal: bool) -> f32 {
         let turn = if u_turn {
@@ -169,7 +180,7 @@ mod tests {
     use super::*;
     use crate::graph::Builder;
     use crate::osm::{Element, Member, MemberKind, Tags};
-    use crate::profile::Car;
+    use crate::profile::Vehicle;
 
     fn tags(pairs: &[(&str, &str)]) -> Tags {
         pairs.iter().map(|(k, v)| ((*k).to_owned(), (*v).to_owned())).collect()
@@ -211,7 +222,7 @@ mod tests {
             way(13, &[5, 3]),
         ];
         elements.extend(extra);
-        let mut builder = Builder::new(Car::from_road_classes("[free_flow_kmh]\nresidential = 36\n").unwrap());
+        let mut builder = Builder::new(Vehicle::from_road_classes("[free_flow_kmh]\nresidential = 36\n").unwrap());
         elements.iter().for_each(|e| builder.first_pass(e));
         elements.iter().for_each(|e| builder.second_pass(e));
         let graph = builder.finish();

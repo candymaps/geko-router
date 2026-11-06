@@ -1,10 +1,10 @@
-{"name":"Sol-Barajas T4","from":[40.4168,-3.7038],"to":[40.4919,-3.5933],"expect_km":[13.0,25.0],"distance_m":19147.1,"duration_s":1316.4,"traffic_duration_s":1340.3}
-{"name":"Atocha-Plaza de Castilla","from":[40.4065,-3.6895],"to":[40.4666,-3.6892],"expect_km":[6.0,12.0],"distance_m":7033.3,"duration_s":664.5,"traffic_duration_s":740.9}
+{"name":"Sol-Barajas T4","from":[40.4168,-3.7038],"to":[40.4919,-3.5933],"expect_km":[13.0,25.0],"distance_m":19147.1,"duration_s":1316.4,"traffic_duration_s":1329.3}
+{"name":"Atocha-Plaza de Castilla","from":[40.4065,-3.6895],"to":[40.4666,-3.6892],"expect_km":[6.0,12.0],"distance_m":7033.3,"duration_s":664.5,"traffic_duration_s":671.0}
 {"name":"Alcalá de Henares-Getafe","from":[40.4818,-3.3636],"to":[40.3086,-3.7329],"expect_km":[38.0,55.0],"distance_m":46407.9,"duration_s":2390.7,"traffic_duration_s":2390.7}
 {"name":"Móstoles-Alcobendas","from":[40.3223,-3.8649],"to":[40.5475,-3.642],"expect_km":[30.0,50.0],"distance_m":47284.3,"duration_s":2573.3,"traffic_duration_s":2573.3}
-{"name":"random-4","from":[40.41887,-3.649166],"to":[40.667065,-3.977269],"distance_m":48347.3,"duration_s":2632.9,"traffic_duration_s":2683.7}
+{"name":"random-4","from":[40.41887,-3.649166],"to":[40.667065,-3.977269],"distance_m":48347.3,"duration_s":2632.9,"traffic_duration_s":2637.5}
 {"name":"random-5","from":[40.223255,-3.151895],"to":[40.820749,-3.626516],"distance_m":107471.9,"duration_s":4718.2,"traffic_duration_s":4718.2}
-{"name":"random-6","from":[40.36775,-3.319558],"to":[40.468033,-3.768445],"distance_m":51889.5,"duration_s":2981.4,"traffic_duration_s":2996.3}
+{"name":"random-6","from":[40.36775,-3.319558],"to":[40.468033,-3.768445],"distance_m":51889.5,"duration_s":2981.4,"traffic_duration_s":2986.0}
 {"name":"random-7","from":[40.354316,-3.88027],"to":[40.345303,-3.264403],"distance_m":65878.0,"duration_s":3277.5,"traffic_duration_s":3277.5}
 {"name":"random-8","from":[40.379038,-4.208617],"to":[40.240182,-3.776575],"distance_m":53685.6,"duration_s":2618.6,"traffic_duration_s":2618.6}
 {"name":"random-9","from":[40.300252,-3.46859],"to":[40.266562,-3.917963],"distance_m":53744.6,"duration_s":2587.9,"traffic_duration_s":2587.9}
@@ -15,13 +15,13 @@
 {"name":"random-14","from":[40.412075,-3.647617],"to":[40.411418,-3.998943],"distance_m":43064.0,"duration_s":2228.0,"traffic_duration_s":2228.0}
 {"name":"random-15","from":[40.429626,-3.290842],"to":[40.468499,-3.622504],"distance_m":33849.5,"duration_s":1954.3,"traffic_duration_s":1954.3}
 {"name":"random-16","from":[40.027278,-3.60163],"to":[40.277712,-3.801655],"distance_m":54630.3,"duration_s":3448.5,"traffic_duration_s":3448.5}
-{"name":"random-17","from":[40.419075,-3.735169],"to":[40.526452,-3.650774],"distance_m":22346.1,"duration_s":1558.8,"traffic_duration_s":1582.0}
+{"name":"random-17","from":[40.419075,-3.735169],"to":[40.526452,-3.650774],"distance_m":22346.1,"duration_s":1558.8,"traffic_duration_s":1560.5}
 {"name":"random-18","from":[40.405566,-3.676959],"to":[40.600636,-3.716337],"distance_m":27422.7,"duration_s":1590.1,"traffic_duration_s":1590.1}
 {"name":"random-19","from":[40.205997,-3.687804],"to":[40.561466,-4.020501],"distance_m":63212.3,"duration_s":3294.7,"traffic_duration_s":3294.7}
 {"name":"random-20","from":[40.479579,-3.715167],"to":[40.387394,-3.928702],"distance_m":29640.2,"duration_s":1771.3,"traffic_duration_s":1771.3}
 {"name":"random-21","from":[40.377464,-3.768349],"to":[40.679753,-3.958319],"distance_m":48673.6,"duration_s":2644.5,"traffic_duration_s":2644.5}
 {"name":"random-22","from":[40.500416,-3.970434],"to":[40.375796,-3.541506],"distance_m":56822.3,"duration_s":2976.8,"traffic_duration_s":2976.8}
-{"name":"random-23","from":[40.511686,-3.904951],"to":[40.446985,-3.524006],"distance_m":37325.2,"duration_s":2272.9,"traffic_duration_s":2277.7}
+{"name":"random-23","from":[40.511686,-3.904951],"to":[40.446985,-3.524006],"distance_m":37325.2,"duration_s":2272.9,"traffic_duration_s":2273.2}
 {"name":"random-24","from":[41.043742,-3.540756],"to":[40.472168,-3.71568],"distance_m":84246.5,"duration_s":3932.9,"traffic_duration_s":3932.9}
 {"name":"random-25","from":[40.494803,-3.701241],"to":[40.476227,-3.368335],"distance_m":33076.9,"duration_s":1789.4,"traffic_duration_s":1789.4}
 {"name":"random-26","from":[40.411536,-3.736463],"to":[40.453445,-3.872037],"distance_m":20066.3,"duration_s":1200.7,"traffic_duration_s":1200.7}
@@ -34,7 +34,7 @@
 {"name":"random-33","from":[40.525192,-3.935191],"to":[40.443974,-3.822246],"distance_m":19456.6,"duration_s":1334.9,"traffic_duration_s":1334.9}
 {"name":"random-34","from":[40.292206,-3.799638],"to":[40.549096,-3.642692],"distance_m":45065.1,"duration_s":2383.4,"traffic_duration_s":2383.4}
 {"name":"random-35","from":[40.622243,-3.906373],"to":[40.527908,-3.621723],"distance_m":45038.9,"duration_s":2695.6,"traffic_duration_s":2695.6}
-{"name":"random-36","from":[40.384386,-3.745364],"to":[40.488796,-3.370654],"distance_m":43332.1,"duration_s":2227.8,"traffic_duration_s":2234.2}
+{"name":"random-36","from":[40.384386,-3.745364],"to":[40.488796,-3.370654],"distance_m":43332.1,"duration_s":2227.8,"traffic_duration_s":2228.9}
 {"name":"random-37","from":[40.386134,-3.47482],"to":[40.234711,-3.764972],"distance_m":37271.9,"duration_s":2022.7,"traffic_duration_s":2022.7}
 {"name":"random-38","from":[40.413785,-3.727275],"to":[40.485105,-3.720916],"distance_m":12479.1,"duration_s":824.9,"traffic_duration_s":824.9}
 {"name":"random-39","from":[40.585723,-3.952228],"to":[40.223612,-3.614792],"distance_m":61738.9,"duration_s":2807.0,"traffic_duration_s":2807.0}
@@ -58,7 +58,7 @@
 {"name":"random-57","from":[40.704405,-3.995333],"to":[40.345909,-4.443002],"distance_m":78980.0,"duration_s":4734.2,"traffic_duration_s":4734.2}
 {"name":"random-58","from":[40.199125,-3.668324],"to":[40.821882,-3.626909],"distance_m":82822.0,"duration_s":3775.8,"traffic_duration_s":3775.8}
 {"name":"random-59","from":[40.662123,-3.757246],"to":[40.427567,-3.92364],"distance_m":46455.9,"duration_s":2699.0,"traffic_duration_s":2699.0}
-{"name":"random-60","from":[40.414609,-3.688898],"to":[40.18946,-3.67782],"distance_m":28508.9,"duration_s":1655.4,"traffic_duration_s":1658.8}
+{"name":"random-60","from":[40.414609,-3.688898],"to":[40.18946,-3.67782],"distance_m":28508.9,"duration_s":1655.4,"traffic_duration_s":1656.1}
 {"name":"random-61","from":[40.288917,-3.748816],"to":[40.420374,-4.2002],"distance_m":52452.4,"duration_s":2629.7,"traffic_duration_s":2629.7}
 {"name":"random-62","from":[40.48685,-3.703748],"to":[40.987467,-3.633552],"distance_m":69580.8,"duration_s":3133.3,"traffic_duration_s":3133.3}
 {"name":"random-63","from":[40.462216,-3.693546],"to":[40.384049,-3.408772],"distance_m":32565.9,"duration_s":2037.1,"traffic_duration_s":2037.1}
@@ -68,12 +68,12 @@
 {"name":"random-67","from":[40.368486,-3.489282],"to":[40.448257,-3.657111],"distance_m":21843.7,"duration_s":1212.8,"traffic_duration_s":1212.8}
 {"name":"random-68","from":[40.346615,-3.70346],"to":[40.454967,-3.697068],"distance_m":17252.7,"duration_s":1339.2,"traffic_duration_s":1339.2}
 {"name":"random-69","from":[40.392182,-3.738086],"to":[40.542693,-3.645693],"distance_m":26038.3,"duration_s":1606.5,"traffic_duration_s":1606.5}
-{"name":"random-70","from":[40.458139,-3.779025],"to":[40.377239,-3.73604],"distance_m":14675.9,"duration_s":1037.8,"traffic_duration_s":1061.8}
+{"name":"random-70","from":[40.458139,-3.779025],"to":[40.377239,-3.73604],"distance_m":14675.9,"duration_s":1037.8,"traffic_duration_s":1040.5}
 {"name":"random-71","from":[40.314028,-3.877875],"to":[40.478327,-3.731873],"distance_m":34690.0,"duration_s":2081.1,"traffic_duration_s":2081.1}
 {"name":"random-72","from":[40.869259,-3.667768],"to":[40.583585,-3.575071],"distance_m":44830.2,"duration_s":2120.6,"traffic_duration_s":2120.6}
 {"name":"random-73","from":[40.62565,-3.400678],"to":[40.286355,-3.209148],"distance_m":54926.7,"duration_s":3432.5,"traffic_duration_s":3432.5}
 {"name":"random-74","from":[40.386619,-4.255222],"to":[40.242323,-3.833891],"distance_m":54508.1,"duration_s":2813.6,"traffic_duration_s":2813.6}
-{"name":"random-75","from":[40.370908,-3.771416],"to":[40.305245,-4.009449],"distance_m":26337.8,"duration_s":1231.3,"traffic_duration_s":1235.1}
+{"name":"random-75","from":[40.370908,-3.771416],"to":[40.305245,-4.009449],"distance_m":26337.8,"duration_s":1231.3,"traffic_duration_s":1231.6}
 {"name":"random-76","from":[40.475949,-3.668343],"to":[40.501027,-3.39446],"distance_m":30250.6,"duration_s":1661.8,"traffic_duration_s":1661.8}
 {"name":"random-77","from":[40.427241,-3.899057],"to":[40.627679,-3.715776],"distance_m":41420.2,"duration_s":2545.3,"traffic_duration_s":2545.3}
 {"name":"random-78","from":[40.463771,-3.59528],"to":[40.215264,-3.789147],"distance_m":39765.6,"duration_s":2135.1,"traffic_duration_s":2135.1}
@@ -93,8 +93,8 @@
 {"name":"random-92","from":[40.03141,-3.613926],"to":[40.170828,-3.272902],"distance_m":36795.1,"duration_s":2444.7,"traffic_duration_s":2444.7}
 {"name":"random-93","from":[40.355678,-3.691109],"to":[40.337856,-3.763782],"distance_m":9173.4,"duration_s":691.6,"traffic_duration_s":691.6}
 {"name":"random-94","from":[40.547525,-3.610701],"to":[40.715496,-3.987707],"distance_m":50602.6,"duration_s":2854.4,"traffic_duration_s":2854.4}
-{"name":"random-95","from":[40.811797,-3.593571],"to":[40.416616,-3.725934],"distance_m":61398.8,"duration_s":2904.4,"traffic_duration_s":2908.7}
+{"name":"random-95","from":[40.811797,-3.593571],"to":[40.416616,-3.725934],"distance_m":61398.8,"duration_s":2904.4,"traffic_duration_s":2904.7}
 {"name":"random-96","from":[40.492013,-3.863579],"to":[40.467052,-3.701728],"distance_m":19134.6,"duration_s":1236.4,"traffic_duration_s":1236.4}
-{"name":"random-97","from":[40.207654,-3.31816],"to":[40.377034,-3.739904],"distance_m":60861.7,"duration_s":2806.2,"traffic_duration_s":2806.9}
-{"name":"random-98","from":[40.365906,-3.759504],"to":[40.37054,-3.72178],"distance_m":4655.8,"duration_s":513.9,"traffic_duration_s":514.5}
+{"name":"random-97","from":[40.207654,-3.31816],"to":[40.377034,-3.739904],"distance_m":60861.7,"duration_s":2806.2,"traffic_duration_s":2806.3}
+{"name":"random-98","from":[40.365906,-3.759504],"to":[40.37054,-3.72178],"distance_m":4655.8,"duration_s":513.9,"traffic_duration_s":514.4}
 {"name":"random-99","from":[40.562411,-3.500788],"to":[40.54507,-3.642388],"distance_m":19090.0,"duration_s":1190.8,"traffic_duration_s":1190.8}

@@ -1,5 +1,5 @@
-# `oras`, the client of OCI registries that publishes the country packs (sourced by ci/packs.sh). It
-# runs from its image when it is not installed. With ~/.config/oras/config.json
+# `oras`, the client of OCI registries that publishes the module and the country packs (sourced by
+# ci/modules.sh and ci/packs.sh). It runs from its image when it is not installed. With ~/.config/oras/config.json
 # (`oras login --registry-config ~/.config/oras/config.json ghcr.io`), it uses those credentials: the
 # store of Docker Desktop does not take those of oras from WSL.
 oras() {

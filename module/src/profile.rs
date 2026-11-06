@@ -1,6 +1,7 @@
-//! The car profile: which ways a car can drive on, in which direction and how fast. The speeds
-//! by road class are data of the country pack (`data/road-classes.toml`), so the profile is the same
-//! code for every country. A ferry that takes cars is a way too, at the time it says it lasts.
+//! The profiles: which ways a car, a truck, a bicycle or someone on foot can use, in which direction
+//! and how fast. The speeds by road class are data of the country pack (`data/road-classes.toml`, and
+//! `data/road-classes-<profile>.toml` for the others), so a profile is the same code for every
+//! country. A ferry that takes them is a way too, at the time it says it lasts.
 
 use std::collections::HashMap;
 
@@ -13,6 +14,50 @@ use crate::osm::{Tags, tag};
 /// the two can be compared. A ferry goes faster than this, but a crossing is rarely the best choice
 /// and a route that takes one with no timetable should not look short.
 const FERRY_KMH: f32 = 5.0;
+
+/// Who goes along the roads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Mode {
+    #[default]
+    Car,
+    Truck,
+    Bike,
+    Foot,
+}
+
+impl Mode {
+    pub const NAMES: [&str; 4] = ["car", "truck", "bike", "foot"];
+
+    pub fn parse(name: &str) -> Option<Self> {
+        match name {
+            "car" => Some(Self::Car),
+            "truck" => Some(Self::Truck),
+            "bike" => Some(Self::Bike),
+            "foot" => Some(Self::Foot),
+            _ => None,
+        }
+    }
+
+    /// Whether the traffic of the sources says anything of them: they measure motor traffic, and a
+    /// jam does not stop a bicycle.
+    pub fn has_traffic(self) -> bool {
+        matches!(self, Self::Car | Self::Truck)
+    }
+
+    fn access_keys(self) -> &'static [&'static str] {
+        match self {
+            Self::Car => &["motor_vehicle", "motorcar", "vehicle", "access"],
+            Self::Truck => &["hgv", "goods", "motor_vehicle", "vehicle", "access"],
+            Self::Bike => &["bicycle", "vehicle", "access"],
+            Self::Foot => &["foot", "access"],
+        }
+    }
+
+    /// Whether the speed limits of a road say anything of how fast they go.
+    fn follows_maxspeed(self) -> bool {
+        self.has_traffic()
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Direction {
@@ -36,6 +81,14 @@ struct RoadClasses {
     /// What an explicit `maxspeed` is multiplied by: nobody drives at the limit all the way.
     #[serde(default = "no_reduction")]
     maxspeed_factor: f32,
+    /// The fastest it goes, whatever the road allows.
+    #[serde(default)]
+    max_kmh: Option<f32>,
+    /// What a truck measures: a way that limits less than this is not for it.
+    #[serde(default)]
+    height_m: Option<f32>,
+    #[serde(default)]
+    weight_t: Option<f32>,
 }
 
 fn no_reduction() -> f32 {
@@ -43,15 +96,23 @@ fn no_reduction() -> f32 {
 }
 
 #[derive(Debug, Clone)]
-pub struct Car {
+pub struct Vehicle {
+    mode: Mode,
     free_flow_kmh: HashMap<String, f32>,
     maxspeed_factor: f32,
+    max_kmh: f32,
+    height_m: Option<f32>,
+    weight_t: Option<f32>,
 }
 
-impl Car {
-    /// From the contents of `data/road-classes.toml` of a pack. Its classes are the `highway` values a
-    /// car can drive on.
+impl Vehicle {
+    /// A car, from the contents of `data/road-classes.toml` of a pack.
     pub fn from_road_classes(toml: &str) -> Result<Self> {
+        Self::of(Mode::Car, toml)
+    }
+
+    /// From the road classes of a pack for `mode`: the `highway` values it can use, and their speeds.
+    pub fn of(mode: Mode, toml: &str) -> Result<Self> {
         let classes: RoadClasses = toml::from_str(toml).map_err(|e| GekoError::Data(format!("road-classes.toml: {e}")))?;
         if let Some((class, speed)) = classes.free_flow_kmh.iter().find(|(_, s)| !(s.is_finite() && **s > 0.0)) {
             return Err(GekoError::Data(format!("road-classes.toml: the speed of `{class}` is {speed}, not a positive number")));
@@ -59,31 +120,57 @@ impl Car {
         if !(classes.maxspeed_factor.is_finite() && classes.maxspeed_factor > 0.0 && classes.maxspeed_factor <= 1.0) {
             return Err(GekoError::Data(format!("road-classes.toml: maxspeed_factor is {}, not a number above 0 and up to 1", classes.maxspeed_factor)));
         }
-        Ok(Self { free_flow_kmh: classes.free_flow_kmh, maxspeed_factor: classes.maxspeed_factor })
+        Ok(Self { mode, free_flow_kmh: classes.free_flow_kmh, maxspeed_factor: classes.maxspeed_factor, max_kmh: classes.max_kmh.unwrap_or(f32::MAX), height_m: classes.height_m, weight_t: classes.weight_t })
     }
 
-    /// `None` when a car cannot use the way.
+    /// Whether a way lets it through, by its access tags and, for a truck, its limits.
+    fn allowed(&self, tags: &Tags) -> bool {
+        let limit = |key: &str| tag(tags, key).and_then(metric);
+        allowed(self.mode, tags) && !self.height_m.is_some_and(|m| limit("maxheight").is_some_and(|l| l < m)) && !self.weight_t.is_some_and(|t| limit("maxweight").is_some_and(|l| l < t))
+    }
+
+    /// `None` when it cannot use the way.
     pub fn way(&self, tags: &Tags) -> Option<Way> {
         if tag(tags, "route") == Some("ferry") {
-            return allowed(tags).then(|| Way { speed_kmh: FERRY_KMH, direction: direction(tags, ""), ferry: true, duration_s: tag(tags, "duration").and_then(duration_s) });
+            return self.allowed(tags).then(|| Way { speed_kmh: FERRY_KMH, direction: direction(self.mode, tags, ""), ferry: true, duration_s: tag(tags, "duration").and_then(duration_s) });
         }
         let highway = tag(tags, "highway")?;
         let class_speed = *self.free_flow_kmh.get(highway)?;
-        if tag(tags, "area") == Some("yes") || !allowed(tags) {
+        if (tag(tags, "area") == Some("yes") && self.mode != Mode::Foot) || !self.allowed(tags) {
             return None;
         }
-        let speed_kmh = tag(tags, "maxspeed").and_then(maxspeed_kmh).map_or(class_speed, |limit| limit * self.maxspeed_factor);
-        Some(Way { speed_kmh, direction: direction(tags, highway), ferry: false, duration_s: None })
+        let limit = if self.mode == Mode::Truck { tag(tags, "maxspeed:hgv").or(tag(tags, "maxspeed")) } else { tag(tags, "maxspeed") };
+        let limit = limit.filter(|_| self.mode.follows_maxspeed()).and_then(maxspeed_kmh);
+        let speed_kmh = limit.map_or(class_speed, |limit| limit * self.maxspeed_factor).min(self.max_kmh);
+        Some(Way { speed_kmh, direction: direction(self.mode, tags, highway), ferry: false, duration_s: None })
+    }
+
+    /// Whether the turn restrictions of OSM bind it: they are for traffic, not for people on foot.
+    pub fn obeys_restrictions(&self) -> bool {
+        self.mode != Mode::Foot
     }
 }
 
-/// The most specific access tag decides: `motor_vehicle`, then `vehicle`, then `access`.
-fn allowed(tags: &Tags) -> bool {
-    let value = ["motor_vehicle", "motorcar", "vehicle", "access"].iter().find_map(|key| tag(tags, key));
-    !matches!(value, Some("no" | "private" | "agricultural" | "forestry" | "emergency"))
+/// The number at the start of a `maxheight` or a `maxweight`, in metres or tonnes; `None` in any other
+/// unit, which then limits nothing rather than something wrong.
+fn metric(value: &str) -> Option<f32> {
+    let value = value.trim();
+    let digits = value.find(|c: char| !(c.is_ascii_digit() || c == '.')).unwrap_or(value.len());
+    matches!(value[digits..].trim(), "" | "m" | "t").then(|| value[..digits].parse().ok()).flatten()
 }
 
-fn direction(tags: &Tags, highway: &str) -> Direction {
+/// The most specific access tag of the mode decides, up to `access`.
+fn allowed(mode: Mode, tags: &Tags) -> bool {
+    let value = mode.access_keys().iter().find_map(|key| tag(tags, key));
+    !matches!(value, Some("no" | "private" | "agricultural" | "forestry" | "emergency" | "use_sidepath"))
+}
+
+fn direction(mode: Mode, tags: &Tags, highway: &str) -> Direction {
+    match mode {
+        Mode::Foot if tag(tags, "oneway:foot") != Some("yes") => return Direction::Both,
+        Mode::Bike if tag(tags, "oneway:bicycle") == Some("no") || tag(tags, "cycleway").is_some_and(|c| c.starts_with("opposite")) => return Direction::Both,
+        _ => {}
+    }
     match tag(tags, "oneway") {
         Some("yes" | "true" | "1") => Direction::Forward,
         Some("-1" | "reverse") => Direction::Backward,
@@ -151,8 +238,8 @@ mod tests {
         pairs.iter().map(|(k, v)| ((*k).to_owned(), (*v).to_owned())).collect()
     }
 
-    fn car() -> Car {
-        Car::from_road_classes(CLASSES).unwrap()
+    fn car() -> Vehicle {
+        Vehicle::from_road_classes(CLASSES).unwrap()
     }
 
     #[test]
@@ -195,7 +282,7 @@ mod tests {
 
     #[test]
     fn maxspeed_is_reduced_by_the_factor_of_the_pack() {
-        let car = Car::from_road_classes("maxspeed_factor = 0.8\n[free_flow_kmh]\nprimary = 65\n").unwrap();
+        let car = Vehicle::from_road_classes("maxspeed_factor = 0.8\n[free_flow_kmh]\nprimary = 65\n").unwrap();
         let speed = |extra: &[(&str, &str)]| {
             let mut all = vec![("highway", "primary")];
             all.extend_from_slice(extra);
@@ -205,7 +292,7 @@ mod tests {
         assert!((speed(&[("maxspeed", "100")]) - 80.0).abs() < 1e-4);
         assert_eq!(speed(&[("maxspeed", "none")]), 65.0);
         for bad in ["0", "1.5", "-1"] {
-            assert!(Car::from_road_classes(&format!("maxspeed_factor = {bad}\n[free_flow_kmh]\nprimary = 65\n")).is_err(), "{bad}");
+            assert!(Vehicle::from_road_classes(&format!("maxspeed_factor = {bad}\n[free_flow_kmh]\nprimary = 65\n")).is_err(), "{bad}");
         }
     }
 
@@ -236,9 +323,54 @@ mod tests {
         assert_eq!(direction(&[("oneway", "no")], "motorway"), Direction::Both);
     }
 
+    fn of(mode: Mode, classes: &str) -> Vehicle {
+        Vehicle::of(mode, classes).unwrap()
+    }
+
+    #[test]
+    fn each_mode_reads_its_own_access() {
+        let classes = "[free_flow_kmh]\nresidential = 10\nfootway = 5\n";
+        let no_cars = tags(&[("highway", "residential"), ("motor_vehicle", "no")]);
+        assert!(of(Mode::Car, classes).way(&no_cars).is_none());
+        assert!(of(Mode::Bike, classes).way(&no_cars).is_some());
+        assert!(of(Mode::Foot, classes).way(&no_cars).is_some());
+        let no_feet = tags(&[("highway", "residential"), ("foot", "no")]);
+        assert!(of(Mode::Foot, classes).way(&no_feet).is_none());
+        assert!(of(Mode::Car, classes).way(&no_feet).is_some());
+        let no_trucks = tags(&[("highway", "residential"), ("hgv", "no")]);
+        assert!(of(Mode::Truck, classes).way(&no_trucks).is_none());
+        assert!(of(Mode::Car, classes).way(&no_trucks).is_some());
+    }
+
+    #[test]
+    fn one_way_binds_less_those_on_foot_and_on_a_bicycle() {
+        let classes = "[free_flow_kmh]\nresidential = 10\n";
+        let oneway = tags(&[("highway", "residential"), ("oneway", "yes")]);
+        assert_eq!(of(Mode::Foot, classes).way(&oneway).unwrap().direction, Direction::Both);
+        assert_eq!(of(Mode::Bike, classes).way(&oneway).unwrap().direction, Direction::Forward);
+        let contraflow = tags(&[("highway", "residential"), ("oneway", "yes"), ("oneway:bicycle", "no")]);
+        assert_eq!(of(Mode::Bike, classes).way(&contraflow).unwrap().direction, Direction::Both);
+        assert_eq!(of(Mode::Car, classes).way(&contraflow).unwrap().direction, Direction::Forward);
+    }
+
+    #[test]
+    fn a_truck_keeps_to_its_limits_and_a_bicycle_ignores_maxspeed() {
+        let truck = of(Mode::Truck, "max_kmh = 80\nheight_m = 4\nweight_t = 18\n[free_flow_kmh]\nmotorway = 80\n");
+        let fast = tags(&[("highway", "motorway"), ("maxspeed", "120")]);
+        assert_eq!(truck.way(&fast).unwrap().speed_kmh, 80.0);
+        let own = tags(&[("highway", "motorway"), ("maxspeed", "120"), ("maxspeed:hgv", "60")]);
+        assert_eq!(truck.way(&own).unwrap().speed_kmh, 60.0);
+        assert!(truck.way(&tags(&[("highway", "motorway"), ("maxheight", "3.5")])).is_none());
+        assert!(truck.way(&tags(&[("highway", "motorway"), ("maxweight", "7.5 t")])).is_none());
+        assert!(truck.way(&tags(&[("highway", "motorway"), ("maxheight", "4.5"), ("maxweight", "40")])).is_some());
+        assert!(truck.way(&tags(&[("highway", "motorway"), ("maxheight", "12'6\"")])).is_some(), "not in metres: no limit");
+        let bike = of(Mode::Bike, "[free_flow_kmh]\nresidential = 16\n");
+        assert_eq!(bike.way(&tags(&[("highway", "residential"), ("maxspeed", "30")])).unwrap().speed_kmh, 16.0);
+    }
+
     #[test]
     fn bad_road_classes() {
-        assert!(Car::from_road_classes("[free_flow_kmh]\nresidential = 0\n").is_err());
-        assert!(Car::from_road_classes("nonsense").is_err());
+        assert!(Vehicle::from_road_classes("[free_flow_kmh]\nresidential = 0\n").is_err());
+        assert!(Vehicle::from_road_classes("nonsense").is_err());
     }
 }
