@@ -1,6 +1,6 @@
 # Módulo `geko-router`: plan
 
-Estado (2026-11-06): en desarrollo, con el código en `dev` y `main` de `candymaps/geko-router`. Bloques A, B, C, D y E hechos, salvo lo que depende de otros (puntos 19 y 28), y los packs `es` y `lu` publicados con la clave de firma nueva (`pack-2`; `es` pasa a `pack-3` con el tráfico). El módulo se publica en cuanto `publish.yml` llegue a `main` (punto 34). Lo hecho y lo que falta está en «Seguimiento». Las decisiones abiertas están al final.
+Estado (2026-11-06): publicado, con el código en `dev` y `main` de `candymaps/geko-router`. Bloques A, B, C, D y E hechos, salvo lo que depende de otros (puntos 19 y 28), con el módulo `0.1.0` y los packs `es` y `lu` (`pack-3`) publicados y firmados. Lo hecho y lo que falta está en «Seguimiento». Las decisiones abiertas están al final.
 
 ## Objetivo
 
@@ -204,7 +204,7 @@ Lista de trabajo, en el orden previsto. Al cerrar un punto se marca aquí, con s
 | C. Packs de país | 6 de 6 | |
 | D. Tráfico completo | 8 de 10 | 19 (hora punta en vivo) y 28 (escribir a la DGT) |
 | E. Funciones de la fase posterior | 4 de 4 | Ninguno |
-| F. Publicación | 3 de 5 | 34 y 36, a falta de mergear |
+| F. Publicación | 5 de 5 | Ninguno |
 
 **Hecho (2026-11-04):** grafo con giros, restricciones y ferris; CCH con customización en caliente; `v1/route` con pasos y alternativas, `v1/nearest`, `v1/table` (etiquetas muchos-a-muchos, 1.000.000 de celdas como máximo) y `v1/status`; `openapi.yaml` y demo; packs `es` y `lu` leídos en tiempo de ejecución, con etapas por extracto; tráfico en vivo de los sensores de Madrid, opcional y desactivado por defecto, con `traffic.coverage`.
 
@@ -379,11 +379,11 @@ Comprobado el 2026-11-04 con el binario de `geko` y la `.so` del módulo (Madrid
 - [x] 33. CI del módulo: `ci.yml`, `pr-comment.yml`, `protected.yml`, `ci/test.sh`, `ci/affected.sh` y `deny.toml`, como en los tiles.
   - `ci/test.sh` pasa clippy, reglas de dependencias, `cargo-deny`, tests y conformidad, en WSL y en los PR de GitHub. El job `golden` pasa las 300 rutas sobre los datos congelados.
   - La protección de `main` y `dev` exige `test`, `golden` y `protected`.
-- [ ] 34. Publicar el módulo firmado y añadirlo a `ci/modules` del host.
+- [x] 34. Publicar el módulo firmado y añadirlo a `ci/modules` del host.
   - Hecho: `ci/modules.sh` y el job `module` de `publish.yml`, como en los tiles. Comprobado en local: compilado en `rust:<toolchain>-bookworm` (GLIBC 2.35 como máximo), firmado con la clave nueva, verificado, y `geko` lo carga, genera Luxemburgo y responde rutas.
-  - Falta: que llegue a `main`, hacer público el paquete `ghcr.io/candymaps/geko-router`, y mergear después la PR del host (rama `feature/router-module`): con `router` en `ci/modules`, la comprobación del host falla si el módulo no está publicado.
+  - Publicado el 2026-11-06 en `ghcr.io/candymaps/geko-router`, público y en `ci/modules`. Comprobado desde una carpeta vacía, sin `GEKO_MODULES` ni `GEKO_ROUTER_PACKS`: `geko` baja el módulo y `pack-3` de `lu`, genera Luxemburgo y responden `route`, `isochrone`, `match` y `trip`.
 - [x] 35. README (con la referencia de opciones), `AGENTS.md` (con «Optimizaciones»), `CLAUDE.md` y `CONTRIBUTING.md` del módulo.
-- [ ] 36. Actualizar PROJECT.md y el README del host con el módulo nuevo. Este plan vive en este repositorio, como lo propio del módulo. Escrito en la rama `feature/router-module` del host, con la página `jekyll/router.md`; falta mergearla, después del punto 34.
+- [x] 36. Actualizar PROJECT.md y el README del host con el módulo nuevo. Este plan vive en este repositorio, como lo propio del módulo. Hecho con la página `jekyll/router.md`, en `dev` del host; llega a su `main` con la siguiente PR de `dev` a `main`.
 - [x] 37. PR de `feature/router-module` a `dev`, y de `dev` a `main`. **Adelantado** (2026-11-05) para publicar los packs: los puntos 34 a 36 y los bloques D y E siguen abiertos, y llegarán a `main` con sus propias PR.
 
 ### Propuesta de corte de la v1
