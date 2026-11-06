@@ -153,7 +153,7 @@ Sustituye a `[traffic.madrid]`, `interval_secs` y `max_age_secs`: la cadencia y 
 
 - `[sources.<nombre>]` solo admite claves que existan en el fichero de la fuente, y nombrar una fuente que ningún pack del ámbito tiene es un error. Se comprueba con los packs a mano, en `prepare`.
 - `[serve] countries`, que estaba en este plan, **se descartó** (2026-11-04): hay un único grafo para todo el ámbito, porque una ruta cruza fronteras, y `[[scope]]` ya dice qué países se sirven.
-- Con `preload = false`, las rutas de `v1/route`, `v1/nearest` y `v1/table` disparan la carga y esperan a que acabe. `v1/status` responde 503 hasta entonces, porque no corre en el pool y no debe bloquearse.
+- Con `preload = false`, las rutas de `v1/route`, `v1/nearest` y `v1/table` disparan la carga y esperan a que acabe. `v1/status` responde `ready: false` hasta entonces, porque no corre en el pool y no debe bloquearse; el dashboard lo lee también sin grafo (antes respondía 503; cambiado el 2026-11-06).
 
 Las opciones que cambian lo generado (perfil, velocidades del pack, recorte) entran en los sellos de las etapas. Una opción desconocida es un error que nombra el fichero y la clave, como en el geocoder.
 

@@ -33,27 +33,90 @@ paths:
             text/html: { schema: { type: string } }
   /v1/status:
     get:
-      summary: What is loaded.
+      summary: What is loaded and how it is set up.
+      description: It answers also before there is a graph, with `ready` false and the graph fields null.
       responses:
         "200":
-          description: The size of the graph, where it is and the state of traffic.
+          description: The bundle, the size of the graph, where it is, the state of traffic, the sources, the options and the last build.
           content:
             application/json:
               schema:
                 type: object
-                required: [nodes, edges, turns, bounds, traffic]
+                required: [ready, bundle, profile, nodes, edges, turns, bounds, traffic, sources, settings, last_build]
                 properties:
-                  nodes: { type: integer }
-                  edges: { type: integer, description: Directed edges of the road graph. }
-                  turns: { type: integer, description: Allowed turns between edges. }
+                  ready: { type: boolean, description: Whether there is a graph to answer with. }
+                  bundle:
+                    type: object
+                    nullable: true
+                    properties:
+                      version: { type: string }
+                      created_unix: { type: integer }
+                  profile: { type: string, description: The profile of the graph. }
+                  nodes: { type: integer, nullable: true }
+                  edges: { type: integer, nullable: true, description: Directed edges of the road graph. }
+                  turns: { type: integer, nullable: true, description: Allowed turns between edges. }
                   bounds:
                     type: array
+                    nullable: true
                     minItems: 4
                     maxItems: 4
                     items: { type: number }
                     description: "`[min lat, min lon, max lat, max lon]` of the graph."
-                  traffic: { $ref: "#/components/schemas/Traffic" }
-        "503": { $ref: "#/components/responses/Error" }
+                  traffic:
+                    nullable: true
+                    allOf: [{ $ref: "#/components/schemas/Traffic" }]
+                  sources:
+                    type: array
+                    nullable: true
+                    description: The sources of the bundle that are of this module, as its manifest declares them.
+                    items:
+                      type: object
+                      properties:
+                        id: { type: string }
+                        name: { type: string, description: Its license. }
+                        attribution: { type: string }
+                        url: { type: string, nullable: true }
+                  settings:
+                    type: array
+                    description: Every option of `geko-router.toml`.
+                    items:
+                      type: object
+                      properties:
+                        key: { type: string }
+                        value: {}
+                        default: {}
+                        apply: { type: string, enum: [restart, rebuild], description: What a change of it takes to apply. }
+                  last_build:
+                    type: object
+                    nullable: true
+                    description: The stages of the last build, null before one.
+  /v1/stats:
+    get:
+      summary: What the module has answered since it started.
+      description: Requests, errors and time in the module of every route, the last hour minute by minute and the last minute second by second. Each replica keeps its own counters.
+      responses:
+        "200":
+          description: The counters of this process. A percentile is the upper bound of the bucket that holds it, null without requests or past the last bucket.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [since_unix, routes, last_hour, last_minute]
+                properties:
+                  since_unix: { type: integer }
+                  routes:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        route: { type: string }
+                        requests: { type: integer }
+                        errors: { type: integer, description: Answers of status 400 or above. }
+                        p50_us: { type: integer, nullable: true }
+                        p95_us: { type: integer, nullable: true }
+                        p99_us: { type: integer, nullable: true }
+                  last_hour: { $ref: "#/components/schemas/StatsWindow" }
+                  last_minute: { $ref: "#/components/schemas/StatsWindow" }
   /v1/route:
     get:
       summary: The fastest route between two points.
@@ -413,6 +476,13 @@ components:
         lat: { type: number }
         lon: { type: number }
         distance_m: { type: number, description: How far the point was from the street. }
+    StatsWindow:
+      type: object
+      description: A period split in equal slots, the oldest first, that ends at `end_unix`.
+      properties:
+        end_unix: { type: integer }
+        requests: { type: array, items: { type: integer } }
+        p99_us: { type: array, items: { type: integer, nullable: true } }
     Traffic:
       description: What is known of traffic. `null` when nothing is (it is off, offline, or its data are too old, and there is no historical profile).
       type: [object, "null"]

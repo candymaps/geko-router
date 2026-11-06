@@ -22,7 +22,8 @@ What it serves, under `/router/`:
 - **Isochrones** (`/router/v1/isochrone`): what can be reached from a point in up to four times, as GeoJSON polygons.
 - **Map matching** (`/router/v1/match`): the roads a trace of up to 2,000 points went along.
 - **Trips** (`/router/v1/trip`): a good order to visit up to 100 points, and its routes. It is a heuristic, not always the best order.
-- **Status** (`/router/v1/status`), the **API** (`/router/openapi.yaml`, also listed in `/docs` of geko) and a **demo** (`/router/`) of routes, isochrones, trips and map matching: click on the map.
+- **Status and statistics** (`/router/v1/status`, `/router/v1/stats`): the bundle and the graph loaded, the sources, the options in effect and the last build; and, since the module started, the requests, errors and time of every route and the last hour minute by minute. They feed the dashboard of geko.
+- The **API** (`/router/openapi.yaml`, also listed in `/docs` of geko) and a **demo** (`/router/`) of routes, isochrones, trips and map matching: click on the map.
 
 On top of the same foundation as the rest of geko:
 
@@ -62,7 +63,7 @@ enabled = true              # also its cadence (refresh_secs) and how long a rea
 
 [serve]
 preload = true              # false: load the graph with the first request that needs it, which waits for it;
-                            # until then v1/status answers 503, and the process takes no memory for it
+                            # until then v1/status says ready = false, and the process takes no memory for it
 ```
 
 `[sources.<name>]` admits only the keys of the file of that source, and naming a source that no pack of the scope has is an error. The profile and the speeds of the pack change what is generated, so they are in the stamps of the build.
