@@ -170,6 +170,9 @@ impl RouterModule {
         if self.setup.config.serve.preload {
             return self.load_now(root);
         }
+        // Left for later, but a part it cannot read is rejected now: geko goes on with the bundle
+        // it had, which it could not do from the first request.
+        graph_io::check(&root.join(pipeline::GRAPH_PART).join(pipeline::GRAPH_FILE))?;
         *self.pending.lock().unwrap_or_else(|e| e.into_inner()) = Some(root.to_owned());
         self.deferred.store(true, Ordering::Release);
         Ok(())
@@ -291,6 +294,18 @@ mod tests {
         assert_eq!(module.handle(get("v1/nearest")).status, 503);
         let nearest = &body("v1/stats")["routes"][1];
         assert_eq!((nearest["route"].as_str(), nearest["requests"].as_u64(), nearest["errors"].as_u64()), (Some("v1/nearest"), Some(1), Some(1)));
+    }
+
+    #[test]
+    fn a_graph_of_another_format_is_rejected_at_load_also_without_preload() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join(pipeline::GRAPH_PART);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(pipeline::GRAPH_FILE), b"GEKORG00 and more").unwrap();
+        for config in ["", "[serve]\npreload = false"] {
+            let err = module(config, tmp.path()).load_from(tmp.path()).unwrap_err().to_string();
+            assert!(err.contains("not a graph file"), "{err}");
+        }
     }
 
     #[test]

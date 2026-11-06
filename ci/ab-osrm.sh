@@ -100,11 +100,11 @@ docker run -d --name osrm-mld --network host --cpuset-cpus 0-7 -v "$osrm:/data" 
 client() { docker run --rm --network host "$@"; }
 reach() { client router-bench-wrk sh -c "wget -q -O- -T 3 '$1' 2>/dev/null | head -c 60"; }
 for _ in $(seq 300); do
-    reach "http://127.0.0.1:$port/health" | grep -q bundle && break
+    reach "http://127.0.0.1:$port/health" | grep -q '"bundle":"' && break
     sleep 1
 done
 echo "geko answers after $((($(date +%s%N) - started) / 1000000)) ms"
-reach "http://127.0.0.1:$port/health" | grep -q bundle || { docker logs geko-srv 2>&1 | tail -3; exit 1; }
+reach "http://127.0.0.1:$port/health" | grep -q '"bundle":"' || { docker logs geko-srv 2>&1 | tail -3; exit 1; }
 for osrm_port in 5000 5001; do
     for _ in $(seq 300); do
         reach "http://127.0.0.1:$osrm_port/route/v1/driving/-3.70,40.41;-3.69,40.42?overview=false" | grep -q '"Ok"' && break
