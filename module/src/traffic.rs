@@ -4,6 +4,7 @@
 //! weights of the graph follow from it. The structure of the graph does not change, so the
 //! hierarchy of queries only has to be customized again (`Cch::customize`), never rebuilt.
 
+use crate::cch::INF;
 use crate::turn::TurnGraph;
 
 /// Free flow, in thousandths of the free-flow speed.
@@ -12,20 +13,32 @@ pub const FREE_FLOW: u16 = 1000;
 /// reading is more likely a broken sensor than a road that has stopped, and a closed road is an
 /// incident, not a speed.
 pub const SLOWEST: u16 = 50;
+/// A closed road: no route goes through it.
+pub const CLOSED: u16 = 0;
+
+/// Where the speed of an edge comes from: what `traffic.coverage` says.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Known {
+    /// Nothing is known of it: the speed of its road class.
+    #[default]
+    Nothing,
+    Historical,
+    Live,
+}
 
 /// The speed of each edge of the road graph, in thousandths of its free-flow speed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Traffic {
     speed: Vec<u16>,
-    /// The edges a source says something of, free ones included: a road known to be clear is not
-    /// a road nothing is known of.
-    measured: Vec<bool>,
+    /// What is known of each edge, free ones included: a road known to be clear is not a road nothing
+    /// is known of.
+    known: Vec<Known>,
 }
 
 impl Traffic {
     /// No traffic: every one of `edges` at free flow.
     pub fn free(edges: usize) -> Self {
-        Self { speed: vec![FREE_FLOW; edges], measured: vec![false; edges] }
+        Self { speed: vec![FREE_FLOW; edges], known: vec![Known::Nothing; edges] }
     }
 
     pub fn edges(&self) -> usize {
@@ -37,16 +50,26 @@ impl Traffic {
         self.speed[edge as usize]
     }
 
-    /// Sets the speed of `edge`, kept between `SLOWEST` and free flow: traffic only slows a road
-    /// down, and what a free road can do is what the profile of its class already says.
+    /// Sets the speed of `edge` from a live source, kept between `SLOWEST` and free flow, or closes it
+    /// with `CLOSED`: traffic only slows a road down, and what a free road can do is what the profile
+    /// of its class already says.
     pub fn set(&mut self, edge: u32, thousandths: u16) {
-        self.speed[edge as usize] = thousandths.clamp(SLOWEST, FREE_FLOW);
-        self.measured[edge as usize] = true;
+        self.put(edge, thousandths, Known::Live);
     }
 
-    /// For each edge, whether a source said anything of it.
-    pub fn measured(&self) -> &[bool] {
-        &self.measured
+    /// Sets what is usual on `edge` at this time, for as long as no live source says otherwise.
+    pub fn set_historical(&mut self, edge: u32, thousandths: u16) {
+        self.put(edge, thousandths, Known::Historical);
+    }
+
+    fn put(&mut self, edge: u32, thousandths: u16, known: Known) {
+        self.speed[edge as usize] = if thousandths == CLOSED { CLOSED } else { thousandths.clamp(SLOWEST, FREE_FLOW) };
+        self.known[edge as usize] = known;
+    }
+
+    /// What is known of each edge.
+    pub fn known(&self) -> &[Known] {
+        &self.known
     }
 
     pub fn is_free(&self) -> bool {
@@ -64,10 +87,12 @@ impl TurnGraph {
     pub fn with_traffic(&self, traffic: &Traffic) -> TurnGraph {
         assert_eq!(traffic.edges(), self.edges(), "the traffic is of another graph");
         let edge_ds: Vec<u32> = self.edge_ds.iter().zip(&traffic.speed).map(|(ds, speed)| slowed(*ds, *speed)).collect();
+        let closed = |edge: usize| traffic.speed[edge] == CLOSED;
         let mut arcs = self.arcs.clone();
         for (tail, window) in self.first_arc.windows(2).enumerate() {
             for arc in &mut arcs[window[0] as usize..window[1] as usize] {
-                arc.weight_ds = arc.weight_ds - self.edge_ds[tail] + edge_ds[tail];
+                // Neither in nor out: `INF` is no arc at all for the hierarchy.
+                arc.weight_ds = if closed(tail) || closed(arc.head as usize) { INF } else { arc.weight_ds - self.edge_ds[tail] + edge_ds[tail] };
             }
         }
         TurnGraph { edge_ds, first_arc: self.first_arc.clone(), arcs }
@@ -175,17 +200,35 @@ mod tests {
     #[test]
     fn speeds_stay_between_the_slowest_and_free_flow() {
         let mut traffic = Traffic::free(2);
-        traffic.set(0, 0);
+        traffic.set(0, 1);
         traffic.set(1, 4000);
         assert_eq!((traffic.speed(0), traffic.speed(1)), (SLOWEST, FREE_FLOW));
     }
 
     #[test]
+    fn no_route_goes_through_a_closed_road() {
+        let graph = square();
+        let mut traffic = Traffic::free(graph.edges());
+        traffic.set(1, CLOSED);
+        assert_eq!(traffic.speed(1), CLOSED);
+        let closed = graph.with_traffic(&traffic);
+        assert_eq!(distance(&closed, 0, 3), 240, "round it, over 2");
+        traffic.set(2, CLOSED);
+        let cch = {
+            let mut cch = Cch::new(&graph);
+            cch.customize(&graph.with_traffic(&traffic));
+            cch
+        };
+        assert_eq!(cch.query(&mut Scratch::new(&cch), 0, 3), None, "both ways closed");
+    }
+
+    #[test]
     fn a_clear_road_is_measured_and_still_free() {
         let mut traffic = Traffic::free(2);
-        assert_eq!(traffic.measured(), [false, false]);
+        assert_eq!(traffic.known(), [Known::Nothing, Known::Nothing]);
         traffic.set(1, FREE_FLOW);
-        assert_eq!(traffic.measured(), [false, true]);
+        traffic.set_historical(0, FREE_FLOW);
+        assert_eq!(traffic.known(), [Known::Historical, Known::Live]);
         assert!(traffic.is_free());
     }
 }

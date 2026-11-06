@@ -25,7 +25,7 @@ use geko_module_router::scc::in_large_component;
 use geko_module_router::snap::{Snap, Snapper};
 use geko_module_router::traffic::Traffic;
 use geko_module_router::turn::{self, TurnGraph, TurnProfile};
-use geko_module_router::{madrid, osm};
+use geko_module_router::{osm, sensors};
 use serde::{Deserialize, Serialize};
 
 /// Rounded to this in the files, so a difference below it is not one.
@@ -114,8 +114,9 @@ fn check_set(pack: &CountryPack, name: &str, set: &Set, dir: &Path, data: &Path,
 
     let slow = match &set.feed {
         Some(feed) => {
-            let readings = madrid::parse(&std::fs::read_to_string(data.join(feed))?);
-            let mut matcher = madrid::Matcher::default();
+            let spec = sensors::Spec::of(pack.sources.values().find(|s| s.kind == sensors::KIND).ok_or("the pack has no sensors")?)?;
+            let readings = sensors::parse(&spec, &std::fs::read_to_string(data.join(feed))?);
+            let mut matcher = sensors::Matcher::new(spec);
             matcher.add(&graph, &snapper, &readings);
             let mut traffic = Traffic::free(graph.edges.len());
             matcher.speeds(&readings).iter().for_each(|(edge, speed)| traffic.set(*edge, *speed));

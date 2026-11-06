@@ -26,8 +26,13 @@ use crate::config::Config;
 use crate::live;
 use crate::extracts::{self, Catalog};
 use crate::graph::{Builder, GeoBox, Graph, Roads};
+use crate::history::{self, Bundled, Holidays, Profile, Sums};
 use crate::pack::{Packs, Source};
 use crate::profile::Car;
+use crate::scc;
+use crate::sensors;
+use crate::serve::MIN_COMPONENT;
+use crate::snap::Snapper;
 use crate::turn::{self, TurnProfile};
 use crate::{graph_io, osm};
 
@@ -35,6 +40,7 @@ use crate::{graph_io, osm};
 const FRAGMENT_CODE: &str = "1";
 const GRAPH_CODE: &str = "5";
 const HIERARCHY_CODE: &str = "1";
+const TRAFFIC_CODE: &str = "1";
 
 /// Where the graph goes in the bundle.
 pub const GRAPH_PART: &str = "router/graph";
@@ -45,6 +51,9 @@ pub const GRAPH_FILE: &str = "graph.bin";
 pub const HIERARCHY_PART: &str = "router/hierarchy";
 
 pub const HIERARCHY_FILE: &str = "cch.bin";
+
+/// Where the sensors matched and the historical profiles go in the bundle, with traffic on.
+pub const TRAFFIC_PART: &str = "router/traffic";
 
 const FRAGMENT_FILE: &str = "fragment.bin";
 
@@ -67,6 +76,15 @@ impl Setup {
 
     fn hierarchy_dir(&self) -> PathBuf {
         self.work().join("hierarchy")
+    }
+
+    fn traffic_dir(&self) -> PathBuf {
+        self.work().join("traffic")
+    }
+
+    /// Where the feeds and files of the sources of traffic are kept.
+    fn sources_dir(&self) -> PathBuf {
+        self.data_dir.join("raw").join("router")
     }
 
     fn fragments_dir(&self) -> PathBuf {
@@ -178,10 +196,12 @@ fn osm_license() -> LicenseNotice {
 }
 
 /// The licenses of what the router reads with this configuration: OpenStreetMap, and the sources
-/// of live traffic only if they are polled.
+/// of traffic only if they are used.
 pub fn licenses(setup: &Setup) -> Vec<LicenseNotice> {
     let mut list = vec![osm_license()];
-    list.extend(live::wanted(setup).into_iter().map(|s| LicenseNotice { source: s.name, name: s.license.name, attribution: s.license.attribution, url: Some(s.license.url) }));
+    let mut sources = live::wanted(setup);
+    sources.extend(live::wanted_history(setup));
+    list.extend(sources.into_iter().map(|s| LicenseNotice { source: s.name, name: s.license.name, attribution: s.license.attribution, url: Some(s.license.url) }));
     list
 }
 
@@ -277,7 +297,16 @@ pub fn plan(setup: &Setup, dl: &dyn Downloader) -> String {
     if live::wanted(setup).is_empty() {
         out.push_str("Live traffic: off\n");
     } else {
-        out.push_str("Live traffic: on, polled in the background by `geko serve` (`build` downloads nothing for it)\n");
+        out.push_str("Live traffic: on, polled in the background by `geko serve`\n");
+    }
+    for source in live::wanted_sensors(setup) {
+        writeln!(out, "  {:<14} its sensors are matched to the graph by `build`", source.name).unwrap();
+    }
+    for source in live::wanted_history(setup) {
+        match history::Spec::of(&source) {
+            Ok(spec) => writeln!(out, "  {:<14} the usual speeds are learned by `build`, from {} files", source.name, spec.files.len()).unwrap(),
+            Err(e) => writeln!(out, "  {e}").unwrap(),
+        }
     }
     if !setup.data.accept_licenses {
         out.push_str("Downloads are blocked until [data] accept_licenses = true (review the licenses above).\n");
@@ -380,6 +409,91 @@ fn prune_fragments(setup: &Setup, fetched: &Fetched) -> Result<()> {
     Ok(())
 }
 
+/// A file of a source of traffic, downloaded to `raw/router/<source>/`, with its digest.
+fn source_file(setup: &Setup, dl: &dyn Downloader, source: &Source, url: &str) -> Result<(PathBuf, String)> {
+    let name = url.rsplit('/').next().filter(|n| !n.is_empty()).unwrap_or("feed");
+    let path = setup.sources_dir().join(&source.name).join(name);
+    let outcome = dl.fetch(&DownloadRequest { url: url.to_owned(), checksum: None }, &path)?;
+    Ok((path, outcome.sha256))
+}
+
+/// The stage of traffic, with traffic on: the sensors of the feeds matched to the graph, once and not
+/// while serving, and the usual speeds of those edges. `None` when no source of the scope needs it.
+/// Returns what it left and whether it was already there.
+fn traffic_stage(setup: &Setup, dl: &dyn Downloader, graph_digest: &str, graph_file: &Path, force: bool) -> Result<Option<(PathBuf, serde_json::Value, bool)>> {
+    let sensor_sources = live::wanted_sensors(setup);
+    let history_sources = live::wanted_history(setup);
+    if sensor_sources.is_empty() && history_sources.is_empty() {
+        return Ok(None);
+    }
+    let mut key = Key::new("traffic").add("code", TRAFFIC_CODE).add("graph", graph_digest);
+    let mut feeds = Vec::new();
+    for source in &sensor_sources {
+        let (path, digest) = source_file(setup, dl, source, &source.url)?;
+        key = key.add(&source.name, &digest).add(&format!("{}.spec", source.name), &format!("{:?}", source.table));
+        feeds.push((source, path));
+    }
+    let mut files = Vec::new();
+    for source in &history_sources {
+        let spec = history::Spec::of(source).map_err(GekoError::Data)?;
+        let mut paths = Vec::new();
+        for url in &spec.files {
+            let (path, digest) = source_file(setup, dl, source, url)?;
+            key = key.add(url, &digest);
+            paths.push(path);
+        }
+        key = key.add(&format!("{}.spec", source.name), &format!("{:?}", source.table));
+        files.push((source, spec, paths));
+    }
+    for country in setup.scope.countries() {
+        let pack = setup.packs.get(country)?;
+        key = key.add(&format!("{country}.calendar"), &format!("{:?} {}", pack.calendar, pack.timezone));
+    }
+    let key = key.finish();
+    let dir = setup.traffic_dir();
+    if let Some(stamp) = incremental::up_to_date(&dir, &key).filter(|_| !force) {
+        return Ok(Some((dir, stamp.info, true)));
+    }
+    fresh_dir(&dir)?;
+    let graph = graph_io::read(graph_file)?;
+    let turns = turn::build(&graph, &TurnProfile::default());
+    let snapper = Snapper::new(&graph, graph.without_ferries(scc::in_large_component(&turns, MIN_COMPONENT)));
+    let mut bundled = Bundled::default();
+    let mut matched_sensors = 0;
+    for (source, path) in feeds {
+        let spec = sensors::Spec::of(source).map_err(GekoError::Data)?;
+        let readings = sensors::parse(&spec, &fs::read_to_string(&path)?);
+        let (matched, stats) = sensors::match_sensors(&spec, &graph, &snapper, &readings);
+        tracing::info!(source = %source.name, sensors = readings.len(), matched = stats.matched, no_direction = stats.no_direction, no_street = stats.no_street, wrong_direction = stats.wrong_direction, "sensors matched to streets");
+        matched_sensors += matched.len();
+        bundled.sensors.insert(source.name.clone(), matched);
+    }
+    let mut profiled_edges = 0;
+    for (source, spec, paths) in files {
+        let Some(sensor_source) = sensor_sources.iter().find(|s| s.name == spec.sensors) else {
+            tracing::warn!(source = %source.name, sensors = %spec.sensors, "no usual speeds: its sensors are not in use");
+            continue;
+        };
+        let levels = sensors::Spec::of(sensor_source).map_err(GekoError::Data)?;
+        let matched = bundled.sensors.get(&spec.sensors).cloned().unwrap_or_default();
+        let country = setup.scope.countries().find(|c| setup.packs.get(*c).is_ok_and(|p| p.sources.contains_key(&source.name)));
+        let pack = setup.packs.get(country.ok_or_else(|| GekoError::Data(format!("no pack has the source {}", source.name)))?)?;
+        let holidays = Holidays::of(&pack.calendar);
+        let mut sums = Sums::default();
+        for path in paths {
+            let used = history::read_zip(&path, |csv| sums.add(&spec, &levels, &holidays, &matched, csv))?;
+            tracing::info!(source = %source.name, file = %path.display(), measurements = used, "usual speeds read");
+        }
+        let profile = Profile::new(&pack.timezone, holidays, sums.profile(&matched))?;
+        profiled_edges += profile.edges();
+        bundled.profiles.insert(source.name.clone(), profile);
+    }
+    bundled.write(&dir)?;
+    let info = serde_json::json!({ "sensors": matched_sensors, "profiled_edges": profiled_edges });
+    let stamp = incremental::seal(&dir, key, &[], info)?;
+    Ok(Some((dir, stamp.info, false)))
+}
+
 pub fn build(setup: &Setup, dl: &dyn Downloader, force: bool) -> Result<Built> {
     licenses_accepted(setup)?;
     if setup.scope.is_empty() {
@@ -437,13 +551,29 @@ pub fn build(setup: &Setup, dl: &dyn Downloader, force: bool) -> Result<Built> {
     };
     log.done("hierarchy", hierarchy_reused);
 
+    let traffic = traffic_stage(setup, dl, &stamp.output, &dir.join(GRAPH_FILE), force)?;
+
     let mut report = fetched.report;
     writeln!(report, "graph: {nodes} nodes, {edges} edges, {arcs} turns{}", if graph_reused && hierarchy_reused { " (up to date)" } else { "" }).unwrap();
+    let mut parts = vec![BundlePart { from: dir, to: GRAPH_PART.into() }, BundlePart { from: hierarchy, to: HIERARCHY_PART.into() }];
+    // What license each part goes under: the graph is a Derived Database of OSM, and what the traffic
+    // part holds comes from the sources of traffic, on edges of that graph.
+    let mut part_licenses = serde_json::json!({ GRAPH_PART: [osm_license().name], HIERARCHY_PART: [osm_license().name] });
+    if let Some((from, info, reused)) = traffic {
+        log.done("traffic", reused);
+        writeln!(report, "traffic: {} sensors matched, {} edges with usual speeds", info["sensors"], info["profiled_edges"]).unwrap();
+        parts.push(BundlePart { from, to: TRAFFIC_PART.into() });
+        let mut names: Vec<String> = live::wanted_sensors(setup).into_iter().chain(live::wanted_history(setup)).map(|s| s.license.name).collect();
+        names.push(osm_license().name);
+        names.sort();
+        names.dedup();
+        part_licenses[TRAFFIC_PART] = names.into();
+    }
     let packs: serde_json::Map<String, serde_json::Value> = setup.scope.countries().map(|c| Ok((c.to_string(), setup.packs.get(c)?.version.into()))).collect::<Result<_>>()?;
     Ok(Built {
         report,
-        parts: vec![BundlePart { from: dir, to: GRAPH_PART.into() }, BundlePart { from: hierarchy, to: HIERARCHY_PART.into() }],
-        meta: serde_json::json!({ "nodes": nodes, "edges": edges, "arcs": arcs, "packs": packs }),
+        parts,
+        meta: serde_json::json!({ "nodes": nodes, "edges": edges, "arcs": arcs, "packs": packs, "part_licenses": part_licenses }),
         licenses: licenses(setup),
         stages: log.into_records(),
         report_extra: serde_json::Map::new(),
@@ -518,7 +648,7 @@ mod tests {
     fn the_licenses_are_those_of_the_pack() {
         let on = setup(&[("ES", &[])], "[traffic]\nenabled = true");
         let list = licenses(&on);
-        assert_eq!(list.iter().map(|l| l.source.as_str()).collect::<Vec<_>>(), ["osm", "madrid-sensors"]);
+        assert_eq!(list.iter().map(|l| l.source.as_str()).collect::<Vec<_>>(), ["osm", "madrid-sensors", "madrid-history"]);
         assert_eq!(list[1].name, "CC BY 4.0");
         assert_eq!(licenses(&setup(&[("ES", &[])], "")).len(), 1, "without traffic, only OSM");
     }

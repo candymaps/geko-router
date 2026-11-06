@@ -1,6 +1,6 @@
 # Módulo `geko-router`: plan
 
-Estado (2026-11-06): en desarrollo, con el código en `dev` y `main` de `candymaps/geko-router`. Bloques A, B y C hechos, y los packs `es` y `lu` publicados con la clave de firma nueva (`pack-2`). El módulo se publica en cuanto `publish.yml` llegue a `main` (punto 34). Lo hecho y lo que falta está en «Seguimiento». Las decisiones abiertas están al final.
+Estado (2026-11-06): en desarrollo, con el código en `dev` y `main` de `candymaps/geko-router`. Bloques A, B, C y D hechos, salvo lo que depende de otros (puntos 19 y 28), y los packs `es` y `lu` publicados con la clave de firma nueva (`pack-2`; `es` pasa a `pack-3` con el tráfico). El módulo se publica en cuanto `publish.yml` llegue a `main` (punto 34). Lo hecho y lo que falta está en «Seguimiento». Las decisiones abiertas están al final.
 
 ## Objetivo
 
@@ -87,7 +87,7 @@ Revisión de lectura, no asesoramiento jurídico. geko no aloja estos datos: cad
 - CC BY 4.0 permite uso comercial y obras derivadas con atribución. La atribución va a `/v1/attribution`: «Ayuntamiento de Madrid, datos abiertos (CC BY 4.0)».
 - Leídas el 2026-11-05 (resumidas por la herramienta web, no el texto íntegro): [condiciones de uso](https://datos.madrid.es/pages/condiciones-de-uso), [condiciones generales](https://datos.madrid.es/pages/condiciones-generales-ayuntamiento-de-madrid) y [aviso legal](https://datos.madrid.es/pages/aviso-legal). El conjunto de histórico también es CC BY 4.0. Permiten el uso comercial, y copiar, modificar y combinar los datos. Ninguna limita el acceso automático.
 - Obligan a citar la fuente, indicar la fecha de actualización si la hay, no desnaturalizar la información, no insinuar que el Ayuntamiento apoya el uso, conservar los metadatos y no reidentificar personas. El uso corre por cuenta de quien reutiliza. Las condiciones generales no mencionan CC BY: se cumplen las dos.
-- Cómo se cumple, con el tráfico activo: `/v1/attribution` da la fuente, la licencia con su enlace y que los datos están modificados, y `traffic.source_updated` da la fecha del feed tal cual. Queda sin cerrar «no desnaturalizar»: los factores de nivel de servicio son provisionales hasta el punto 20, y antes de eso es mejor no presentar el tráfico como una medida fiable.
+- Cómo se cumple, con el tráfico activo: `/v1/attribution` da la fuente, la licencia con su enlace y que los datos están modificados, y `traffic.source_updated` da la fecha del feed tal cual. «No desnaturalizar»: los factores de nivel de servicio ya están medidos (punto 20), con la reserva de que salen de vías rápidas, y `changes` dice que las velocidades son estimadas.
 - Cuidado con la mezcla de licencias, igual que con CartoCiudad (CC BY) junto a OSM (ODbL): los pesos de tráfico y el grafo de OSM viajan en el mismo bundle. Conviene fijar qué parte del bundle es obra derivada de OSM (ODbL) y cuál lleva CC BY, y declararlo en el manifiesto.
 
 **DGT (incidencias): usable con reservas.**
@@ -163,7 +163,7 @@ Etapas con sellos de entrada (hash de código y de entradas, como PROJECT.md §8
 2. **Grafo** (`router/graph/`): la unión de los fragmentos, con giros y restricciones. Su sello depende del contenido de los fragmentos.
 3. **Jerarquía** (`router/hierarchy/`): orden de nodos y contracción (CCH). Es lo caro, y su sello depende del contenido del grafo, así que un grafo que sale igual no la repite.
 
-Las pendientes, con el bloque D: casado de los puntos de medida con aristas (punto 22) y perfiles históricos (punto 24).
+4. **Tráfico** (`router/traffic/`), solo con `[traffic] enabled`: los sensores casados con las aristas (punto 22) y los perfiles históricos (punto 24). Su sello depende del grafo, del feed y de los ficheros del histórico.
 
 El índice espacial se construye al cargar, con una rejilla: el R-tree de Hilbert se descartó por medición (punto 11).
 
@@ -202,7 +202,7 @@ Lista de trabajo, en el orden previsto. Al cerrar un punto se marca aquí, con s
 | A. Base sólida y medida | 7 de 7 | |
 | B. API de la fase 1 | 5 de 5 | |
 | C. Packs de país | 6 de 6 | |
-| D. Tráfico completo | 1 de 10 | 19 a 26 y 28 |
+| D. Tráfico completo | 8 de 10 | 19 (hora punta en vivo) y 28 (escribir a la DGT) |
 | E. Funciones de la fase posterior | 0 de 4 | 29 a 32 |
 | F. Publicación | 3 de 5 | 34 y 36, a falta de mergear |
 
@@ -332,16 +332,30 @@ Comprobado el 2026-11-04 con el binario de `geko` y la `.so` del módulo (Madrid
 
 ### D. Tráfico completo
 
-- [ ] 19. Probar la capa en vivo con el feed real de Madrid, de punta a punta. Prueba de humo el 2026-11-04, con `geko serve` y el feed real: 1.248 aristas medidas, 127 lentas y una ruta del centro que pasa de 695 a 711 s. Queda abierto: no se ha comprobado el casado sensor a sensor ni el comportamiento en horas punta.
-- [ ] 20. Calibrar la conversión de nivel de servicio a velocidad (valores provisionales). Se deja para más adelante por decisión del propietario, y hasta entonces no se cierra «no desnaturalizar» de las condiciones de Madrid (ver «Licencias»).
-- [ ] 21. Proveedores genéricos por `kind`. La URL, la cadencia, la caducidad, la licencia y lo que cubre Madrid ya salen del pack; falta que `madrid.rs` lea del pack las etiquetas y los factores de nivel de servicio, que siguen en el código.
-- [ ] 22. Casar los sensores al generar el bundle, no en servicio.
-- [ ] 23. Combinar varias fuentes: hoy hay un único poller y cada lectura sustituye a la anterior.
-- [ ] 24. Perfil histórico: mediciones, velocidad por hora y día, calendario de festivos, y decaimiento hacia el histórico en vez de a velocidad libre. Como mete datos de Madrid (CC BY) en el bundle junto al grafo de OSM (ODbL), hay que declarar en el manifiesto qué lleva cada licencia. El código sigue siendo AGPL; hoy no hay mezcla, porque el tráfico en vivo no va en el bundle.
-- [ ] 25. `traffic=none|historical|live` y `depart_at`, con la parte histórica en `traffic.coverage`.
-- [ ] 26. Incidencias: parser DATEX II y cierre real de vías (hoy lo más lento es un 5 % de la velocidad). La fuente de la DGT queda desactivada por defecto hasta cerrar el punto 28.
+- [ ] 19. Probar la capa en vivo con el feed real de Madrid, de punta a punta. Hecho el 2026-11-06 con `geko build` y `serve`, ámbito `ES-MD`, feeds reales de Madrid y de la DGT, de madrugada. Falta verla en una hora punta real.
+  - Casado sensor a sensor (`examples/sensors.rs`): de 3.295 sensores, 836 casados, 2.420 sin dirección legible en su descripción y 39 sin calle en su sentido. De los 812 casados con calle con nombre, en 750 (92,4 %) la descripción y OSM dicen la misma calle. Los 62 restantes, vistos los 25 primeros, son sobre todo cruces y plazas, y puede haber errores reales.
+  - El 73 % de los sensores queda fuera por no decir su sentido. Es la mayor pérdida de cobertura, y es a propósito: frenar la calzada equivocada es peor que no saber.
+  - Prueba de caducidad y de varias fuentes con `Hub` en los tests: lo que una fuente deja de decir vuelve a lo habitual.
+- [x] 20. Calibrar la conversión de nivel de servicio a velocidad. Medido el 2026-11-06 con el histórico de octubre de 2026: 992.059 lecturas de 360 sensores que dicen su velocidad (`vmed`, tipo M30 y C30), como razón frente a su velocidad libre (percentil 85 con carga de hasta el 10 %).
+  - Por carga: 0–24, mediana 0,976; 25–49, 0,976; 50–74, 0,917 (media 0,882); 75–100, 0,828 (media 0,775, p10 0,425). Los umbrales entre nivel y carga salen de una lectura del feed de madrugada: nivel 0 hasta 45, 2 de 51 a 72, 3 desde 77.
+  - Factores del pack: 1,0, 0,97, 0,88 y 0,78, frente a 1,0, 0,7, 0,45 y 0,25 que había. Efecto: una ruta de 8 km por Madrid pasa de 796 a 798,5 s un lunes a las 8:30.
+  - **Reserva:** son vías rápidas. En la ciudad el retraso está sobre todo en los cruces, que ningún sensor mide, así que estos factores probablemente se quedan cortos en calles urbanas. Faltan tiempos reales (trazas GPS) para saberlo.
+- [x] 21. Proveedores genéricos por `kind`: `sensors-xml` (`sensors.rs`, antes `madrid.rs`), `datex2-situations` (`situations.rs`) y `history-csv` (`history.rs`). Etiquetas, direcciones, factores y distancias de casado salen del pack; la única conversión de coordenadas sigue siendo EPSG:25830, y otra se rechaza con un error.
+- [x] 22. Casar los sensores al generar el bundle: etapa `traffic`, con `router/traffic/sensors.tsv`. En servicio solo se casa un sensor que no estaba en el feed al generar, o si el bundle se generó con el tráfico apagado.
+- [x] 23. Combinar varias fuentes: un hilo por fuente y un `Hub` que las junta. Una fuente en vivo manda sobre lo habitual, entre varias gana la más lenta, y solo se recustomiza si algo cambia.
+- [x] 24. Perfil histórico: fuente `madrid-history` (septiembre y octubre de 2026, 96 MB por mes), 168 franjas por hora y día de la semana, con los festivos del calendario como domingo. Un dato en vivo caducado vuelve a lo habitual, y un reloj sigue el cambio de hora.
+  - Madrid: 803 aristas con perfil en un `build` de 30 s. A las 8:30 de un lunes hay 653 aristas lentas, y 75 a las 4:30 de un domingo.
+  - El perfil se aprende de la carga, pasada a nivel y a factor, así que hereda la reserva del punto 20. Solo cubre los sensores casados.
+  - Licencias: `meta.part_licenses` del bundle dice qué lleva cada parte; `router/traffic` lleva CC BY 4.0 y ODbL. Revisión de lectura, no asesoramiento jurídico.
+- [x] 25. `traffic=none|historical|live` y `depart_at` en `route` y `table`, con `historical` en `traffic.coverage`. La primera petición de una hora espera su customización (0,27 s en Madrid; en España, segundos), y se guardan 2 horas, porque cada una ocupa una jerarquía. `traffic=none` conserva la jerarquía a velocidad libre, que con tráfico activo también ocupa memoria.
+- [x] 26. Incidencias: parser DATEX II y cierre real de vías (`CLOSED`: ninguna ruta entra ni sale de esa arista, y `closed_edges` lo dice). La fuente de la DGT sigue desactivada por defecto hasta cerrar el punto 28.
+  - Un tramo es el camino más rápido entre sus extremos a velocidad libre, y se descarta si pasa de 1,5 veces la línea recta más 500 m. Probado con el feed real: 49 aristas cerradas en el ámbito de Madrid. No se han comprobado una a una.
+  - Sentido: `both` cierra los dos, `positive` y `negative` van de `from` a `to`. Lo segundo es una suposición sobre el feed.
+  - El cliente de la SDK no pide gzip, así que cada lectura son de 3,5 a 7 MB. El pack lee cada 5 minutos, y no cada minuto, por eso: unos 1,5 GB al día con la fuente activa.
 - [x] 27. **[gestión]** Leer las condiciones de uso de Madrid y la ficha del conjunto de histórico. Hecho el 2026-11-05, después de publicar `pack-1`, que solo declara la fuente (ver «Licencias»). Revisión de lectura, no asesoramiento jurídico.
-- [ ] 28. **[gestión]** Escribir a la DGT para aclarar su licencia. Es una precaución, no un permiso previo: no bloquea el punto 26 y solo condiciona activar la fuente por defecto.
+- [ ] 28. **[gestión]** Escribir a la DGT para aclarar su licencia. Es una precaución, no un permiso previo: no bloquea el punto 26 y solo condiciona activar la fuente por defecto. Texto propuesto, para el contacto del NAP:
+
+  > Buenos días. Quiero reutilizar el conjunto «Incidencias DGT DATEX II v3.7» del Punto de Acceso Nacional en un motor de rutas de código abierto. La ficha indica Creative Commons Attribution, pero el aviso legal enlazado reserva la reproducción y la transformación. ¿Podrían confirmarme por escrito qué licencia y versión se aplican, si se permite el uso comercial y las obras derivadas, y qué texto de atribución debo usar? Muchas gracias.
 
 ### E. Funciones de la fase posterior
 

@@ -41,7 +41,7 @@ only() {
 # write down here.
 architecture() {
     local failed=0
-    only "geko-module-router depends on" "geko-artifact geko-fetch geko-module-sdk osmpbf serde serde_json toml tracing" "$(direct_dependencies geko-module-router)" || failed=1
+    only "geko-module-router depends on" "chrono chrono-tz geko-artifact geko-fetch geko-module-sdk osmpbf serde serde_json toml tracing zip" "$(direct_dependencies geko-module-router)" || failed=1
     only "geko-module-router-dylib depends on" "geko-module-router geko-module-sdk mimalloc tracing-subscriber" "$(direct_dependencies geko-module-router-dylib)" || failed=1
     return $failed
 }

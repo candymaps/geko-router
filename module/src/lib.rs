@@ -4,8 +4,9 @@
 //! live traffic if it is asked for (`live`).
 
 mod config;
+pub mod history;
 pub mod live;
-pub mod madrid;
+pub mod sensors;
 mod extracts;
 pub mod cch;
 pub mod graph;
@@ -16,6 +17,7 @@ mod pipeline;
 pub mod profile;
 pub mod route;
 pub mod scc;
+pub mod situations;
 mod serve;
 pub mod snap;
 pub mod steps;
@@ -171,7 +173,7 @@ impl RouterModule {
                 "notice": "The road graph is a Derived Database of OpenStreetMap: © OpenStreetMap contributors.",
             },
         });
-        for source in live::wanted(&self.setup) {
+        for source in live::wanted(&self.setup).into_iter().chain(live::wanted_history(&self.setup)) {
             attribution[format!("traffic_{}", source.name)] = live::attribution(&source);
         }
         attribution
@@ -184,10 +186,11 @@ impl RouterModule {
         let mut poller = self.poller.lock().unwrap_or_else(|e| e.into_inner());
         *poller = None;
         let Some(loaded) = self.server.current() else { return };
-        // One source for now: each reading replaces the one before (docs/ROUTER_PLAN.md, point 23).
-        if let Some(source) = live::wanted(&self.setup).into_iter().next() {
-            *poller = Some(live::start(loaded, Duration::from_secs(source.refresh_secs), Duration::from_secs(source.ttl_secs), live::fetch_url(source.url)));
-        }
+        let feeds = live::wanted(&self.setup).into_iter().map(|source| {
+            let fetch = live::fetch_url(source.url.clone());
+            live::Feed { source, fetch }
+        });
+        *poller = live::start(loaded, feeds.collect(), Duration::from_secs(60));
     }
 }
 

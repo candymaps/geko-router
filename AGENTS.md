@@ -55,4 +55,7 @@ Before optimizing, check this list so as not to repeat what was already discarde
 - A fast hasher alone in `Snapper` (2026-11-04, Spain): 7.1 s, no better.
 - A stamp per province (2026-11-04): the hierarchy is global, and a new PBF of Spain changes every province at once. Stages go by extract.
 
+**Did not work, or not yet:**
+- Reading the direction of a sensor only from its description (2026-11-06, Madrid): 2,420 of 3,295 sensors do not say it, and stay out. Their direction could come from the street, at the price of slowing the wrong carriageway.
+
 **Not measured on its own:** mimalloc in the library of the module.

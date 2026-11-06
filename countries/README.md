@@ -4,7 +4,7 @@ Todo lo propio de un país vive en su pack, `countries/<país>/`: las velocidade
 
 | Pack | Fuentes | Particiones | Golden |
 |---|---|---|---|
-| `es` | OSM, sensores de Madrid, incidencias de la DGT (desactivada) | Provincias, con cajas | Baleares, y Madrid con tráfico congelado |
+| `es` | OSM, sensores de Madrid y su histórico, incidencias de la DGT (desactivada) | Provincias, con cajas | Baleares, y Madrid con tráfico congelado |
 | `lu` | OSM | El país entero | Luxemburgo entero |
 
 ## De dónde los lee el módulo

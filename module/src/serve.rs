@@ -2,6 +2,7 @@
 //! route needs (turns, components, the index of streets) and answers `v1/route`, `v1/table`,
 //! `v1/nearest` and `v1/status`.
 
+use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Instant;
@@ -11,17 +12,19 @@ use geko_module_sdk::module::{Request, Response};
 
 use crate::cch::{Cch, Scratch};
 use crate::graph::Graph;
-use crate::pipeline::{GRAPH_FILE, GRAPH_PART, HIERARCHY_FILE, HIERARCHY_PART};
+use crate::history::Bundled;
+use crate::pipeline::{GRAPH_FILE, GRAPH_PART, HIERARCHY_FILE, HIERARCHY_PART, TRAFFIC_PART};
 use crate::route::{self, durations_cch};
 use crate::steps;
 use crate::scc;
 use crate::snap::{Snap, Snapper};
-use crate::traffic::{FREE_FLOW, Traffic};
+use crate::situations::Places;
+use crate::traffic::{CLOSED, FREE_FLOW, Known, Traffic};
 use crate::turn::{self, TurnGraph, TurnProfile};
 use crate::graph_io;
 
 /// A component of fewer edges than this is an island: a car park, a private road.
-const MIN_COMPONENT: u32 = 1000;
+pub const MIN_COMPONENT: u32 = 1000;
 /// How far from the road a point may be and still snap to it, unless the request says otherwise.
 const DEFAULT_SNAP_M: f64 = 1000.0;
 const MAX_SNAP_M: f64 = 50_000.0;
@@ -33,6 +36,8 @@ const DEMO: &str = include_str!("demo.html");
 /// for long, and the answer has a number for each cell.
 const MAX_TABLE_CELLS: usize = 1_000_000;
 const MAX_TABLE_POINTS: usize = 2_000;
+/// The hours of the historical profile kept customized: each takes the memory of a hierarchy.
+const MAX_HOURS_KEPT: usize = 2;
 
 /// What answers at a moment: the weights of the turn graph and the hierarchy customized for them.
 /// Traffic makes a new one and swaps it in, so that requests in flight finish on the one they began with.
@@ -41,8 +46,10 @@ struct Weighted {
     cch: Cch,
     /// Edges slower than free flow, or `None` if no source says anything: no data is not no jams.
     slowed_edges: Option<usize>,
-    /// For each edge, whether a source says anything of it; empty when none does.
-    measured: Vec<bool>,
+    /// Edges closed, of those.
+    closed_edges: usize,
+    /// What is known of each edge; empty when nothing is.
+    known: Vec<Known>,
 }
 
 pub struct Loaded {
@@ -51,21 +58,83 @@ pub struct Loaded {
     free: Arc<TurnGraph>,
     snapper: Snapper,
     live: RwLock<Arc<Weighted>>,
+    /// At free flow, for `traffic=none`: it shares its hierarchy with `live` until traffic comes.
+    free_flow: Arc<Weighted>,
+    /// The sensors and the profiles of the bundle.
+    bundled: Bundled,
+    /// The hours asked for, by their slots, the last one at the end.
+    hours: Mutex<Vec<(Vec<u16>, Arc<Weighted>)>>,
     /// Query state is as large as the graph: requests take one and give it back, not make one.
     scratches: Mutex<Vec<Scratch>>,
     /// When the sources last answered, which can be after the last change of the weights.
     updated: Mutex<Instant>,
-    /// The date the source gives to its data, as it writes it.
-    source_updated: Mutex<Option<String>>,
+    /// The date each source gives to its data, as it writes it.
+    source_updated: Mutex<BTreeMap<String, Option<String>>>,
     /// `[min lat, min lon, max lat, max lon]` of the nodes, found the first time it is asked.
     bounds: std::sync::OnceLock<[f64; 4]>,
 }
 
 impl Loaded {
-    fn new(graph: Graph, free: TurnGraph, snapper: Snapper, cch: Cch) -> Self {
+    fn new(graph: Graph, free: TurnGraph, snapper: Snapper, cch: Cch, bundled: Bundled) -> Self {
         let free = Arc::new(free);
         let turns = Arc::clone(&free);
-        Self { graph, free, snapper, live: RwLock::new(Arc::new(Weighted { turns, cch, slowed_edges: None, measured: Vec::new() })), scratches: Mutex::new(Vec::new()), updated: Mutex::new(Instant::now()), source_updated: Mutex::new(None), bounds: std::sync::OnceLock::new() }
+        let free_flow = Arc::new(Weighted { turns, cch, slowed_edges: None, closed_edges: 0, known: Vec::new() });
+        Self { graph, free, snapper, live: RwLock::new(Arc::clone(&free_flow)), free_flow, bundled, hours: Mutex::new(Vec::new()), scratches: Mutex::new(Vec::new()), updated: Mutex::new(Instant::now()), source_updated: Mutex::new(BTreeMap::new()), bounds: std::sync::OnceLock::new() }
+    }
+
+    /// The edge of each sensor of a source, as the bundle says.
+    pub fn sensors(&self, source: &str) -> HashMap<u32, u32> {
+        self.bundled.sensors.get(source).cloned().unwrap_or_default()
+    }
+
+    pub fn has_profiles(&self) -> bool {
+        !self.bundled.profiles.is_empty()
+    }
+
+    /// The slot of each profile at a moment.
+    pub fn slots(&self, at: chrono::DateTime<chrono::Utc>) -> Vec<u16> {
+        self.bundled.profiles.values().map(|p| p.slot(at)).collect()
+    }
+
+    /// What is usual at `slots`: free flow where nothing is known.
+    pub fn usual(&self, slots: &[u16]) -> Traffic {
+        let mut traffic = Traffic::free(self.edges());
+        for (profile, slot) in self.bundled.profiles.values().zip(slots) {
+            profile.speeds(*slot).for_each(|(edge, speed)| traffic.set_historical(edge, speed));
+        }
+        traffic
+    }
+
+    /// The hierarchy for what is usual at `slots`, customized the first time it is asked, which that
+    /// request waits for.
+    fn at_hour(&self, slots: Vec<u16>) -> Arc<Weighted> {
+        if !self.has_profiles() {
+            return Arc::clone(&self.free_flow);
+        }
+        let mut hours = self.hours.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(at) = hours.iter().position(|(s, _)| *s == slots) {
+            let hour = hours.remove(at);
+            let weighted = Arc::clone(&hour.1);
+            hours.push(hour);
+            return weighted;
+        }
+        let weighted = Arc::new(self.weigh(&self.usual(&slots)));
+        if hours.len() == MAX_HOURS_KEPT {
+            hours.remove(0);
+        }
+        hours.push((slots, Arc::clone(&weighted)));
+        weighted
+    }
+
+    /// The weights of `traffic`, with a hierarchy customized for them.
+    fn weigh(&self, traffic: &Traffic) -> Weighted {
+        let turns = Arc::new(self.free.with_traffic(traffic));
+        let mut cch = self.free_flow.cch.share_topology();
+        cch.customize(&turns);
+        let speeds = || (0..traffic.edges() as u32).map(|e| traffic.speed(e));
+        let slowed = speeds().filter(|s| *s < FREE_FLOW).count();
+        let known = traffic.known().iter().any(|k| *k != Known::Nothing);
+        Weighted { turns, cch, slowed_edges: known.then_some(slowed), closed_edges: speeds().filter(|s| *s == CLOSED).count(), known: if known { traffic.known().to_vec() } else { Vec::new() } }
     }
 
     fn bounds(&self) -> [f64; 4] {
@@ -93,13 +162,7 @@ impl Loaded {
     /// Answers from now on with the graph at the speeds of `traffic`; with none, at free flow again.
     /// The hierarchy that answers is not touched while the next one is customized.
     pub fn apply(&self, traffic: &Traffic, updated: Instant) {
-        let current = self.weighted();
-        let turns = Arc::new(self.free.with_traffic(traffic));
-        let mut cch = current.cch.share_topology();
-        cch.customize(&turns);
-        let slowed = (0..traffic.edges() as u32).filter(|e| traffic.speed(*e) < FREE_FLOW).count();
-        let measured = traffic.measured().contains(&true);
-        let weighted = Weighted { turns, cch, slowed_edges: measured.then_some(slowed), measured: if measured { traffic.measured().to_vec() } else { Vec::new() } };
+        let weighted = self.weigh(traffic);
         self.touch(updated);
         *self.live.write().unwrap_or_else(|e| e.into_inner()) = Arc::new(weighted);
     }
@@ -109,17 +172,37 @@ impl Loaded {
         *self.updated.lock().unwrap_or_else(|e| e.into_inner()) = updated;
     }
 
-    /// The date the source gives to what it said last.
-    pub fn set_source_updated(&self, date: Option<String>) {
-        *self.source_updated.lock().unwrap_or_else(|e| e.into_inner()) = date;
+    /// The date a source gives to what it said last.
+    pub fn set_source_updated(&self, source: &str, date: Option<String>) {
+        self.source_updated.lock().unwrap_or_else(|e| e.into_inner()).insert(source.to_owned(), date);
     }
 
     /// What a response says of traffic: `null` when no source says anything (it is off, or the data
-    /// are too old); with nothing slow, `slowed_edges` is 0.
+    /// are too old); with nothing slow, `slowed_edges` is 0. How old it is, only if some of it is live.
     fn traffic(&self, weighted: &Weighted) -> serde_json::Value {
-        let age_s = self.updated.lock().unwrap_or_else(|e| e.into_inner()).elapsed().as_secs();
-        let source_updated = self.source_updated.lock().unwrap_or_else(|e| e.into_inner()).clone();
-        weighted.slowed_edges.map_or(serde_json::Value::Null, |slowed_edges| serde_json::json!({ "slowed_edges": slowed_edges, "age_s": age_s, "source_updated": source_updated }))
+        let Some(slowed_edges) = weighted.slowed_edges else { return serde_json::Value::Null };
+        let mut body = serde_json::json!({ "slowed_edges": slowed_edges, "closed_edges": weighted.closed_edges });
+        if weighted.known.contains(&Known::Live) {
+            body["age_s"] = self.updated.lock().unwrap_or_else(|e| e.into_inner()).elapsed().as_secs().into();
+            body["source_updated"] = serde_json::json!(*self.source_updated.lock().unwrap_or_else(|e| e.into_inner()));
+        }
+        body
+    }
+
+    /// The weights a request asks for, by `traffic` and `depart_at`: live by default, what is usual
+    /// for a time, or none at all.
+    fn asked(&self, request: &Request) -> std::result::Result<Arc<Weighted>, String> {
+        let depart_at = match query(request, "depart_at") {
+            None => None,
+            Some(text) => Some(chrono::DateTime::parse_from_rfc3339(text).map_err(|_| format!("`depart_at` is a time of RFC 3339, with its offset: {text:?}"))?.with_timezone(&chrono::Utc)),
+        };
+        match (query(request, "traffic"), depart_at) {
+            (None | Some("live"), None) => Ok(self.weighted()),
+            (Some("none"), None) => Ok(Arc::clone(&self.free_flow)),
+            (None | Some("historical"), at) => Ok(self.at_hour(self.slots(at.unwrap_or_else(chrono::Utc::now)))),
+            (Some(mode @ ("live" | "none")), Some(_)) => Err(format!("`depart_at` goes with `traffic=historical`, not with `traffic={mode}`")),
+            (Some(other), _) => Err(format!("`traffic` is none, historical or live: {other:?}")),
+        }
     }
 
     /// Runs `query` with the state of a query of the pool.
@@ -145,6 +228,25 @@ impl Loaded {
             body["steps"] = steps::steps(&self.graph, &weighted.turns, route).iter().map(step_json).collect();
         }
         body
+    }
+}
+
+impl Places for Loaded {
+    fn way(&self, from: [f64; 2], to: [f64; 2], max_m: f64) -> Option<(Vec<u32>, f64)> {
+        let (from, to) = (self.snapper.snap(&self.graph, from[0], from[1], max_m), self.snapper.snap(&self.graph, to[0], to[1], max_m));
+        if from.is_empty() || to.is_empty() {
+            return None;
+        }
+        let free = &self.free_flow;
+        let found = self.with_scratch(free, |scratch| route::route_cch(&self.graph, &free.turns, &free.cch, scratch, &from, &to))?;
+        Some((found.edges, found.distance_m))
+    }
+
+    fn road(&self, at: [f64; 2], max_m: f64) -> Vec<u32> {
+        let snaps = self.snapper.snap(&self.graph, at[0], at[1], max_m);
+        let Some(first) = snaps.first() else { return Vec::new() };
+        let way = self.graph.edges[first.edge as usize].way;
+        snaps.iter().map(|s| s.edge).filter(|e| self.graph.edges[*e as usize].way == way).collect()
     }
 }
 
@@ -242,17 +344,20 @@ fn alternatives(request: &Request) -> std::result::Result<usize, String> {
 
 /// Which share of a route, by length, a source says something of. The first and last edges count
 /// whole: on a route of any length that is noise, and it is a share, not a measurement.
-fn coverage(graph: &Graph, edges: &[u32], measured: &[bool]) -> serde_json::Value {
-    let (mut live, mut total) = (0.0_f64, 0.0_f64);
+fn coverage(graph: &Graph, edges: &[u32], known: &[Known]) -> serde_json::Value {
+    let (mut live, mut historical, mut total) = (0.0_f64, 0.0_f64, 0.0_f64);
     for edge in edges {
         let length = graph.edges[*edge as usize].length_m as f64;
         total += length;
-        if measured.get(*edge as usize).copied().unwrap_or(false) {
-            live += length;
+        match known.get(*edge as usize) {
+            Some(Known::Live) => live += length,
+            Some(Known::Historical) => historical += length,
+            _ => {}
         }
     }
-    let live = if total > 0.0 { (live / total * 1000.0).round() / 1000.0 } else { 0.0 };
-    serde_json::json!({ "live": live, "free_flow": ((1.0 - live) * 1000.0).round() / 1000.0 })
+    let share = |part: f64| if total > 0.0 { (part / total * 1000.0).round() / 1000.0 } else { 0.0 };
+    let (live, historical) = (share(live), share(historical));
+    serde_json::json!({ "live": live, "historical": historical, "free_flow": ((1.0 - live - historical) * 1000.0).round() / 1000.0 })
 }
 
 fn json(status: u16, value: serde_json::Value) -> Response {
@@ -263,14 +368,15 @@ impl Server {
     /// Loads the part of the router of the bundle in `root`.
     pub fn load(&self, root: &std::path::Path) -> Result<()> {
         let graph = graph_io::read(&root.join(GRAPH_PART).join(GRAPH_FILE))?;
-        self.install(graph, MIN_COMPONENT, Some(&root.join(HIERARCHY_PART).join(HIERARCHY_FILE)));
+        let bundled = Bundled::read(&root.join(TRAFFIC_PART))?;
+        self.install(graph, MIN_COMPONENT, Some(&root.join(HIERARCHY_PART).join(HIERARCHY_FILE)), bundled);
         Ok(())
     }
 
     /// Prepares what a route needs from `graph` and starts answering with it; requests in flight finish
     /// on the previous one. The topology of the hierarchy is read from `hierarchy`, or worked out again
     /// if the file is missing or is not of this graph.
-    fn install(&self, graph: Graph, min_component: u32, hierarchy: Option<&std::path::Path>) {
+    fn install(&self, graph: Graph, min_component: u32, hierarchy: Option<&std::path::Path>, bundled: Bundled) {
         let turns = turn::build(&graph, &TurnProfile::default());
         let snapper = Snapper::new(&graph, graph.without_ferries(scc::in_large_component(&turns, min_component)));
         let mut cch = match hierarchy.map(|path| Cch::read(path, &turns)) {
@@ -283,7 +389,7 @@ impl Server {
             }
         };
         cch.customize(&turns);
-        *self.loaded.write().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(Loaded::new(graph, turns, snapper, cch)));
+        *self.loaded.write().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(Loaded::new(graph, turns, snapper, cch, bundled)));
     }
 
     /// What answers now, which traffic is applied to.
@@ -334,6 +440,11 @@ impl Server {
             Err(e) => return self.bad(&e),
         };
 
+        let weighted = match loaded.asked(request) {
+            Ok(weighted) => weighted,
+            Err(e) => return self.bad(&e),
+        };
+
         let started = Instant::now();
         let snap = |(lat, lon): (f64, f64)| loaded.snapper.snap(&loaded.graph, lat, lon, snap_m);
         let (snapped_from, snapped_to) = (snap(from), snap(to));
@@ -342,7 +453,6 @@ impl Server {
             let which = if snapped_from.is_empty() { "from" } else { "to" };
             return json(422, serde_json::json!({ "error": format!("no street within {snap_m} m of `{which}`") }));
         };
-        let weighted = loaded.weighted();
         let mut found = loaded.routes(&weighted, &snapped_from, &snapped_to, wanted);
         if found.is_empty() {
             self.no_route.fetch_add(1, Ordering::Relaxed);
@@ -356,7 +466,7 @@ impl Server {
         if traffic.is_null() {
             traffic = serde_json::json!({});
         }
-        traffic["coverage"] = coverage(&loaded.graph, &found.edges, &weighted.measured);
+        traffic["coverage"] = coverage(&loaded.graph, &found.edges, &weighted.known);
         let mut body = loaded.route_json(&weighted, &found, geometry, with_steps);
         body["snapped"] = serde_json::json!({ "from": origin, "to": destination });
         body["traffic"] = traffic;
@@ -365,7 +475,7 @@ impl Server {
                 .iter()
                 .map(|other| {
                     let mut alternative = loaded.route_json(&weighted, other, geometry, with_steps);
-                    alternative["coverage"] = coverage(&loaded.graph, &other.edges, &weighted.measured);
+                    alternative["coverage"] = coverage(&loaded.graph, &other.edges, &weighted.known);
                     alternative
                 })
                 .collect();
@@ -387,10 +497,13 @@ impl Server {
         if from.len() * to.len() > MAX_TABLE_CELLS {
             return self.bad(&format!("{} x {} is more than the {MAX_TABLE_CELLS} cells of a table", from.len(), to.len()));
         }
+        let weighted = match loaded.asked(request) {
+            Ok(weighted) => weighted,
+            Err(e) => return self.bad(&e),
+        };
         let started = Instant::now();
         let snap = |points: &[(f64, f64)]| points.iter().map(|(lat, lon)| loaded.snapper.snap(&loaded.graph, *lat, *lon, snap_m)).collect::<Vec<_>>();
         let (from, to) = (snap(&from), snap(&to));
-        let weighted = loaded.weighted();
         let durations = loaded.with_scratch(&weighted, |scratch| durations_cch(&weighted.turns, &weighted.cch, scratch, &from, &to));
         self.ok.fetch_add(1, Ordering::Relaxed);
         let snapped = |list: &[Vec<Snap>]| list.iter().map(|s| snapped_json(s)).collect::<Vec<_>>();
@@ -474,7 +587,7 @@ mod tests {
         elements.iter().for_each(|e| builder.first_pass(e));
         elements.iter().for_each(|e| builder.second_pass(e));
         let server = Server::default();
-        server.install(builder.finish(), 1, None);
+        server.install(builder.finish(), 1, None, Bundled::default());
         server
     }
 
@@ -492,7 +605,7 @@ mod tests {
     fn without_a_source_a_route_says_all_of_it_is_free_flow() {
         let server = server();
         let (_, body) = get(&server, &[("from", "0,-0.0005"), ("to", "0.0005,0")]);
-        assert_eq!(body["traffic"], serde_json::json!({ "coverage": { "live": 0.0, "free_flow": 1.0 } }));
+        assert_eq!(body["traffic"], serde_json::json!({ "coverage": { "live": 0.0, "historical": 0.0, "free_flow": 1.0 } }));
         assert_eq!(ask(&server, "v1/status", &[]).1["traffic"], serde_json::Value::Null);
     }
 
@@ -502,26 +615,104 @@ mod tests {
         let loaded = server.current().unwrap();
         let mut traffic = Traffic::free(loaded.edges());
         (0..loaded.edges() as u32).for_each(|e| traffic.set(e, FREE_FLOW));
-        loaded.set_source_updated(Some("03/11/2026 17:55:02".into()));
+        loaded.set_source_updated("madrid-sensors", Some("03/11/2026 17:55:02".into()));
         loaded.apply(&traffic, Instant::now());
         let (_, body) = get(&server, &[("from", "0,-0.0005"), ("to", "0.0005,0")]);
         assert_eq!(body["traffic"]["slowed_edges"], 0);
-        assert_eq!(body["traffic"]["source_updated"], "03/11/2026 17:55:02");
-        assert_eq!(body["traffic"]["coverage"], serde_json::json!({ "live": 1.0, "free_flow": 0.0 }));
+        assert_eq!(body["traffic"]["source_updated"]["madrid-sensors"], "03/11/2026 17:55:02");
+        assert_eq!(body["traffic"]["coverage"], serde_json::json!({ "live": 1.0, "historical": 0.0, "free_flow": 0.0 }));
         // The data got too old: back to knowing nothing.
         loaded.apply(&Traffic::free(loaded.edges()), Instant::now());
         let (_, body) = get(&server, &[("from", "0,-0.0005"), ("to", "0.0005,0")]);
-        assert_eq!(body["traffic"], serde_json::json!({ "coverage": { "live": 0.0, "free_flow": 1.0 } }));
+        assert_eq!(body["traffic"], serde_json::json!({ "coverage": { "live": 0.0, "historical": 0.0, "free_flow": 1.0 } }));
+    }
+
+    /// `server` with what is usual on Mondays at 8: every edge at half its speed.
+    fn server_with_a_profile() -> Server {
+        let plain = server();
+        let edges = plain.current().unwrap().edges() as u32;
+        let mut row = vec![u16::MAX; crate::history::SLOTS];
+        row[8] = 500;
+        let profile = crate::history::Profile::new("UTC", Default::default(), (0..edges).map(|e| (e, row.clone())).collect()).unwrap();
+        let graph = plain.current().unwrap().graph().clone();
+        let server = Server::default();
+        server.install(graph, 1, None, Bundled { profiles: [("usual".to_owned(), profile)].into(), ..Default::default() });
+        server
+    }
+
+    #[test]
+    fn a_time_asks_for_what_is_usual_then() {
+        let server = server_with_a_profile();
+        let route = [("from", "0,-0.0005"), ("to", "0.0005,0")];
+        let free = get(&server, &route).1["duration_s"].as_f64().unwrap();
+        let (_, monday) = get(&server, &[route[0], route[1], ("depart_at", "2026-11-02T08:30:00Z")]);
+        assert!(monday["duration_s"].as_f64().unwrap() > free * 1.5, "{monday}");
+        assert_eq!(monday["traffic"]["coverage"], serde_json::json!({ "live": 0.0, "historical": 1.0, "free_flow": 0.0 }));
+        assert_eq!(monday["traffic"]["age_s"], serde_json::Value::Null, "nothing live");
+        let (_, tuesday) = get(&server, &[route[0], route[1], ("depart_at", "2026-11-03T08:30:00Z"), ("traffic", "historical")]);
+        assert_eq!(tuesday["duration_s"].as_f64().unwrap(), free, "nothing known of Tuesdays");
+        let (_, none) = get(&server, &[route[0], route[1], ("traffic", "none")]);
+        assert_eq!(none["duration_s"].as_f64().unwrap(), free);
+    }
+
+    #[test]
+    fn only_a_few_hours_are_kept_customized() {
+        let server = server_with_a_profile();
+        let loaded = server.current().unwrap();
+        (0..5).for_each(|slot| drop(loaded.at_hour(vec![slot])));
+        assert_eq!(loaded.hours.lock().unwrap().len(), MAX_HOURS_KEPT);
+    }
+
+    #[test]
+    fn what_the_sources_stop_saying_goes_back_to_what_is_usual() {
+        let server = server_with_a_profile();
+        let loaded = server.current().unwrap();
+        let hub = crate::live::Hub::new(Arc::clone(&loaded));
+        let edges = loaded.edges() as u32;
+        let route = [("from", "0,-0.0005"), ("to", "0.0005,0")];
+        // Two sources at once: the slowest decides.
+        hub.publish("sensors", Some((0..edges).map(|e| (e, 900)).collect()), Instant::now());
+        hub.publish("incidents", Some((0..edges).map(|e| (e, 250)).collect()), Instant::now());
+        let slow = get(&server, &route).1;
+        assert_eq!(slow["traffic"]["coverage"]["live"], 1.0, "{slow}");
+        hub.publish("incidents", None, Instant::now());
+        let lighter = get(&server, &route).1;
+        assert!(lighter["duration_s"].as_f64() < slow["duration_s"].as_f64(), "{lighter}");
+        hub.publish("sensors", None, Instant::now());
+        assert_eq!(get(&server, &route).1["traffic"]["coverage"]["live"], 0.0);
+    }
+
+    #[test]
+    fn a_time_or_a_mode_that_makes_no_sense_is_a_400() {
+        let server = server();
+        let route = [("from", "0,-0.0005"), ("to", "0.0005,0")];
+        for (key, value) in [("traffic", "soon"), ("depart_at", "tomorrow")] {
+            assert_eq!(get(&server, &[route[0], route[1], (key, value)]).0, 400, "{value}");
+        }
+        assert_eq!(get(&server, &[route[0], route[1], ("traffic", "live"), ("depart_at", "2026-11-02T08:30:00Z")]).0, 400);
+        assert_eq!(get(&server, &[route[0], route[1], ("depart_at", "2026-11-02T08:30:00Z")]).0, 200, "no profile: at free flow");
+    }
+
+    #[test]
+    fn a_closed_road_has_no_route_through_it_and_none_is_asked_to_end_on_it() {
+        let server = server();
+        let loaded = server.current().unwrap();
+        let mut traffic = Traffic::free(loaded.edges());
+        (0..loaded.edges() as u32).for_each(|e| traffic.set(e, CLOSED));
+        loaded.apply(&traffic, Instant::now());
+        assert_eq!(get(&server, &[("from", "0,-0.0005"), ("to", "0.0005,0")]).0, 404);
+        assert_eq!(ask(&server, "v1/status", &[]).1["traffic"]["closed_edges"], loaded.edges());
+        assert_eq!(get(&server, &[("from", "0,-0.0005"), ("to", "0.0005,0"), ("traffic", "none")]).0, 200, "unless traffic is not asked for");
     }
 
     #[test]
     fn only_the_measured_part_of_a_route_is_live() {
-        let graph_edges = [(100.0, true), (300.0, false)];
+        let graph_edges = [(100.0, Known::Live), (300.0, Known::Nothing), (100.0, Known::Historical)];
         let graph = Graph { edges: graph_edges.iter().map(|(m, _)| crate::graph::Edge { from: 0, to: 0, way: 0, length_m: *m, seconds: 0.0, shape_start: 0, shape_len: 0, reversed: false, ferry: false, name: crate::graph::NO_NAME }).collect(), ..Default::default() };
-        let measured: Vec<bool> = graph_edges.iter().map(|(_, m)| *m).collect();
-        assert_eq!(coverage(&graph, &[0, 1], &measured), serde_json::json!({ "live": 0.25, "free_flow": 0.75 }));
-        assert_eq!(coverage(&graph, &[0, 1], &[]), serde_json::json!({ "live": 0.0, "free_flow": 1.0 }));
-        assert_eq!(coverage(&graph, &[], &measured), serde_json::json!({ "live": 0.0, "free_flow": 1.0 }));
+        let known: Vec<Known> = graph_edges.iter().map(|(_, k)| *k).collect();
+        assert_eq!(coverage(&graph, &[0, 1, 2], &known), serde_json::json!({ "live": 0.2, "historical": 0.2, "free_flow": 0.6 }));
+        assert_eq!(coverage(&graph, &[0, 1], &[]), serde_json::json!({ "live": 0.0, "historical": 0.0, "free_flow": 1.0 }));
+        assert_eq!(coverage(&graph, &[], &known), serde_json::json!({ "live": 0.0, "historical": 0.0, "free_flow": 1.0 }));
     }
 
     #[test]
