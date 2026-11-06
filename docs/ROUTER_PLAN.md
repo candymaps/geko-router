@@ -1,6 +1,6 @@
 # Módulo `geko-router`: plan
 
-Estado (2026-11-06): publicado, con el código en `dev` y `main` de `candymaps/geko-router`. Bloques A, B, C, D y E hechos, salvo lo que depende de otros (puntos 19 y 28), con el módulo `0.1.0` y los packs `es` y `lu` (`pack-3`) publicados y firmados. Lo hecho y lo que falta está en «Seguimiento». Las decisiones abiertas están al final.
+Estado (2026-11-06): publicado, con el código en `dev` y `main` de `candymaps/geko-router`. Bloques A, B, C, D y E hechos, salvo la lectura en hora punta (punto 19), con el módulo `0.1.0` y los packs `es` y `lu` publicados y firmados (`pack-3`; `es` pasa a `pack-4` al llegar a `main`). Lo hecho y lo que falta está en «Seguimiento». Las decisiones abiertas están al final.
 
 ## Objetivo
 
@@ -92,8 +92,10 @@ Revisión de lectura, no asesoramiento jurídico. geko no aloja estos datos: cad
 
 **DGT (incidencias): usable con reservas.**
 - La ficha del NAP dice «Creative Commons Attribution» (enlaza a la Open Definition, sin versión) y «Licence and Free of charge». Sin autenticación.
-- Pero las condiciones de uso que enlaza esa ficha, el aviso legal de la DGT, dicen que los contenidos son titularidad de la DGT y tratan como infracción «la reproducción, distribución, comercialización o transformación no autorizadas», salvo uso personal y privado. No menciona reutilización, el Real Decreto 1495/2011 ni Creative Commons. Las dos cosas no encajan.
-- Mientras la DGT no lo aclare por escrito, la fuente queda **desactivada por defecto** en el pack (`enabled = false`). Pedir a la DGT (contacto del NAP) que confirme: licencia y versión, uso comercial, obras derivadas, y la atribución exacta.
+- Las condiciones de uso que enlaza esa ficha, el aviso legal de la DGT, reservan «este portal de Internet, su diseño gráfico y los códigos que contiene», no los conjuntos de datos, y no mencionan la reutilización. Queda una frase menos clara sobre «la información contenida en este portal», que es `dgt.es`; el feed está en `nap.dgt.es`. Corrige la lectura del 2026-11-03, que hablaba de «los contenidos» y exageraba la contradicción.
+- El Real Decreto 1495/2011 (sector público estatal) hace de la reutilización sin condiciones específicas la modalidad por defecto, también comercial (artículo 8), y las específicas exigen una orden motivada, que no se ha encontrado. Sus condiciones generales (artículo 7) son las de Madrid: citar la fuente y la fecha de actualización, no desnaturalizar, no insinuar respaldo y conservar los metadatos. La Ley 37/2007 no se ha leído.
+- Revisión del 2026-11-06: **no hace falta escribir a la DGT para usar la fuente.** La ficha sigue sin dar la versión de la licencia. Si se quisiera una confirmación por escrito, el contacto es `nap@dgt.es`.
+- La fuente sigue **desactivada por defecto** (`enabled = false`), y activarla es decisión de cada instalación, que descarga los datos de la DGT. Ya no es por la licencia: son unos 1,5 GB al día y faltan por comprobar los cierres y el sentido (punto 26).
 - Cobertura: red estatal, salvo País Vasco y Cataluña, que publican las suyas (en el NAP: «Incidencias DT-GV» e «Incidencias SCT»). Fuera de la red estatal, sin dato.
 - No trae velocidad ni flujo: solo situaciones (cortes de calzada, de carril, obras, retenciones `slowTraffic`).
 
@@ -202,7 +204,7 @@ Lista de trabajo, en el orden previsto. Al cerrar un punto se marca aquí, con s
 | A. Base sólida y medida | 7 de 7 | |
 | B. API de la fase 1 | 5 de 5 | |
 | C. Packs de país | 6 de 6 | |
-| D. Tráfico completo | 8 de 10 | 19 (hora punta en vivo) y 28 (escribir a la DGT) |
+| D. Tráfico completo | 9 de 10 | 19 (hora punta en vivo) |
 | E. Funciones de la fase posterior | 4 de 4 | Ninguno |
 | F. Publicación | 5 de 5 | Ninguno |
 
@@ -349,14 +351,12 @@ Comprobado el 2026-11-04 con el binario de `geko` y la `.so` del módulo (Madrid
   - El perfil se aprende de la carga, pasada a nivel y a factor, así que hereda la reserva del punto 20. Solo cubre los sensores casados.
   - Licencias: `meta.part_licenses` del bundle dice qué lleva cada parte; `router/traffic` lleva CC BY 4.0 y ODbL. Revisión de lectura, no asesoramiento jurídico.
 - [x] 25. `traffic=none|historical|live` y `depart_at` en `route` y `table`, con `historical` en `traffic.coverage`. La primera petición de una hora espera su customización (0,27 s en Madrid; en España, segundos), y se guardan 2 horas, porque cada una ocupa una jerarquía. `traffic=none` conserva la jerarquía a velocidad libre, que con tráfico activo también ocupa memoria.
-- [x] 26. Incidencias: parser DATEX II y cierre real de vías (`CLOSED`: ninguna ruta entra ni sale de esa arista, y `closed_edges` lo dice). La fuente de la DGT sigue desactivada por defecto hasta cerrar el punto 28.
+- [x] 26. Incidencias: parser DATEX II y cierre real de vías (`CLOSED`: ninguna ruta entra ni sale de esa arista, y `closed_edges` lo dice). La fuente de la DGT sigue desactivada por defecto (ver «Licencias»).
   - Un tramo es el camino más rápido entre sus extremos a velocidad libre, y se descarta si pasa de 1,5 veces la línea recta más 500 m. Probado con el feed real: 49 aristas cerradas en el ámbito de Madrid. No se han comprobado una a una.
   - Sentido: `both` cierra los dos, `positive` y `negative` van de `from` a `to`. Lo segundo es una suposición sobre el feed.
   - El cliente de la SDK no pide gzip, así que cada lectura son de 3,5 a 7 MB. El pack lee cada 5 minutos, y no cada minuto, por eso: unos 1,5 GB al día con la fuente activa.
 - [x] 27. **[gestión]** Leer las condiciones de uso de Madrid y la ficha del conjunto de histórico. Hecho el 2026-11-05, después de publicar `pack-1`, que solo declara la fuente (ver «Licencias»). Revisión de lectura, no asesoramiento jurídico.
-- [ ] 28. **[gestión]** Escribir a la DGT para aclarar su licencia. Es una precaución, no un permiso previo: no bloquea el punto 26 y solo condiciona activar la fuente por defecto. Texto propuesto, para el contacto del NAP:
-
-  > Buenos días. Quiero reutilizar el conjunto «Incidencias DGT DATEX II v3.7» del Punto de Acceso Nacional en un motor de rutas de código abierto. La ficha indica Creative Commons Attribution, pero el aviso legal enlazado reserva la reproducción y la transformación. ¿Podrían confirmarme por escrito qué licencia y versión se aplican, si se permite el uso comercial y las obras derivadas, y qué texto de atribución debo usar? Muchas gracias.
+- [x] 28. **[gestión]** Aclarar la licencia de la DGT. Cerrado el 2026-11-06 sin escribir: revisada, el correo no es necesario para usar la fuente (ver «Licencias»). Revisión de lectura, no asesoramiento jurídico.
 
 ### E. Funciones de la fase posterior
 

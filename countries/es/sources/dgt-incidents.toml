@@ -4,10 +4,10 @@
 # Country or Catalonia (they publish their own, as in nap.dgt.es "Incidencias DT-GV" and
 # "Incidencias SCT"). It carries no speed or flow: only situations.
 #
-# Disabled by default until the DGT confirms the reuse in writing: the dataset says Creative
-# Commons Attribution, but the legal notice it links to reserves reproduction, distribution,
-# commercialization and transformation (docs/ROUTER_PLAN.md, «Licencias»). geko does not host
-# the data: each installation downloads it from the DGT.
+# Disabled by default: turning it on is the decision of each installation, which downloads the data
+# from the DGT, and geko does not host them. The dataset says Creative Commons Attribution, with no
+# version; its legal notice reserves the portal, not the datasets (docs/ROUTER_PLAN.md, «Licencias»).
+# It takes about 1.5 GB a day, and its closures and directions are still to be checked.
 
 kind = "datex2-situations"
 enabled = false
