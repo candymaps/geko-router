@@ -1,0 +1,19 @@
+# What a bicycle does on average, on flat ground: slopes are not in the graph. Provisional. Speed
+# limits do not count, and a motorway is not in the list.
+
+[free_flow_kmh]
+cycleway = 18
+path = 12
+track = 10
+primary = 16
+primary_link = 16
+secondary = 16
+secondary_link = 16
+tertiary = 16
+tertiary_link = 16
+unclassified = 16
+residential = 16
+living_street = 10
+service = 12
+pedestrian = 6
+footway = 6

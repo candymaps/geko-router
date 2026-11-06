@@ -1,6 +1,6 @@
 # Módulo `geko-router`: plan
 
-Estado (2026-11-05, bloques B y C hechos, con los packs publicados; medición del punto 4 aplazada): en desarrollo, en la rama `feature/router-module` de `candymaps/geko-router`, sin publicar. Lo hecho y lo que falta está en «Seguimiento». Las decisiones abiertas están al final.
+Estado (2026-11-06): en desarrollo, con el código en `dev` y `main` de `candymaps/geko-router`. Bloques A, B, C, D y E hechos, salvo lo que depende de otros (puntos 19 y 28), y los packs `es` y `lu` publicados con la clave de firma nueva (`pack-2`; `es` pasa a `pack-3` con el tráfico). El módulo se publica en cuanto `publish.yml` llegue a `main` (punto 34). Lo hecho y lo que falta está en «Seguimiento». Las decisiones abiertas están al final.
 
 ## Objetivo
 
@@ -87,7 +87,7 @@ Revisión de lectura, no asesoramiento jurídico. geko no aloja estos datos: cad
 - CC BY 4.0 permite uso comercial y obras derivadas con atribución. La atribución va a `/v1/attribution`: «Ayuntamiento de Madrid, datos abiertos (CC BY 4.0)».
 - Leídas el 2026-11-05 (resumidas por la herramienta web, no el texto íntegro): [condiciones de uso](https://datos.madrid.es/pages/condiciones-de-uso), [condiciones generales](https://datos.madrid.es/pages/condiciones-generales-ayuntamiento-de-madrid) y [aviso legal](https://datos.madrid.es/pages/aviso-legal). El conjunto de histórico también es CC BY 4.0. Permiten el uso comercial, y copiar, modificar y combinar los datos. Ninguna limita el acceso automático.
 - Obligan a citar la fuente, indicar la fecha de actualización si la hay, no desnaturalizar la información, no insinuar que el Ayuntamiento apoya el uso, conservar los metadatos y no reidentificar personas. El uso corre por cuenta de quien reutiliza. Las condiciones generales no mencionan CC BY: se cumplen las dos.
-- Cómo se cumple, con el tráfico activo: `/v1/attribution` da la fuente, la licencia con su enlace y que los datos están modificados, y `traffic.source_updated` da la fecha del feed tal cual. Queda sin cerrar «no desnaturalizar»: los factores de nivel de servicio son provisionales hasta el punto 20, y antes de eso es mejor no presentar el tráfico como una medida fiable.
+- Cómo se cumple, con el tráfico activo: `/v1/attribution` da la fuente, la licencia con su enlace y que los datos están modificados, y `traffic.source_updated` da la fecha del feed tal cual. «No desnaturalizar»: los factores de nivel de servicio ya están medidos (punto 20), con la reserva de que salen de vías rápidas, y `changes` dice que las velocidades son estimadas.
 - Cuidado con la mezcla de licencias, igual que con CartoCiudad (CC BY) junto a OSM (ODbL): los pesos de tráfico y el grafo de OSM viajan en el mismo bundle. Conviene fijar qué parte del bundle es obra derivada de OSM (ODbL) y cuál lleva CC BY, y declararlo en el manifiesto.
 
 **DGT (incidencias): usable con reservas.**
@@ -163,7 +163,7 @@ Etapas con sellos de entrada (hash de código y de entradas, como PROJECT.md §8
 2. **Grafo** (`router/graph/`): la unión de los fragmentos, con giros y restricciones. Su sello depende del contenido de los fragmentos.
 3. **Jerarquía** (`router/hierarchy/`): orden de nodos y contracción (CCH). Es lo caro, y su sello depende del contenido del grafo, así que un grafo que sale igual no la repite.
 
-Las pendientes, con el bloque D: casado de los puntos de medida con aristas (punto 22) y perfiles históricos (punto 24).
+4. **Tráfico** (`router/traffic/`), solo con `[traffic] enabled`: los sensores casados con las aristas (punto 22) y los perfiles históricos (punto 24). Su sello depende del grafo, del feed y de los ficheros del histórico.
 
 El índice espacial se construye al cargar, con una rejilla: el R-tree de Hilbert se descartó por medición (punto 11).
 
@@ -181,7 +181,7 @@ Antes de afirmar «más rápido que OSRM»:
 
 ## Pasos
 
-Cada paso deja resultados verificables antes del siguiente.
+Cada paso deja resultados verificables antes del siguiente. Es el orden con el que se planteó el trabajo; lo que está hecho y lo que falta se lleva en «Seguimiento».
 
 1. **Esqueleto del módulo.** Repositorio, `describe`, `plan`/`fetch` del OSM, `handle` que responde 503, conformidad de la SDK en verde. Publicación firmada.
 2. **Grafo y perfil de coche.** Grafo con giros y restricciones, `nearest`, golden de Baleares (`ES-PM`) y Luxemburgo.
@@ -196,6 +196,15 @@ Cada paso deja resultados verificables antes del siguiente.
 ## Seguimiento
 
 Lista de trabajo, en el orden previsto. Al cerrar un punto se marca aquí, con su commit o su medición. Los marcados con **[decisión]** o **[gestión]** dependen del propietario del proyecto.
+
+| Bloque | Hechos | Pendiente |
+|---|---|---|
+| A. Base sólida y medida | 7 de 7 | |
+| B. API de la fase 1 | 5 de 5 | |
+| C. Packs de país | 6 de 6 | |
+| D. Tráfico completo | 8 de 10 | 19 (hora punta en vivo) y 28 (escribir a la DGT) |
+| E. Funciones de la fase posterior | 4 de 4 | Ninguno |
+| F. Publicación | 3 de 5 | 34 y 36, a falta de mergear |
 
 **Hecho (2026-11-04):** grafo con giros, restricciones y ferris; CCH con customización en caliente; `v1/route` con pasos y alternativas, `v1/nearest`, `v1/table` (etiquetas muchos-a-muchos, 1.000.000 de celdas como máximo) y `v1/status`; `openapi.yaml` y demo; packs `es` y `lu` leídos en tiempo de ejecución, con etapas por extracto; tráfico en vivo de los sensores de Madrid, opcional y desactivado por defecto, con `traffic.coverage`.
 
@@ -240,12 +249,28 @@ Generación del router: 8,3 M de aristas, 14,6 M de giros, 408 s y 3,1 GB de pic
 
 **Efecto de `query_many` (misma sesión, Baleares, pares alternos de `9a41f87` y `ad3cec1`):** sin geometría 1,87, 1,54 y 1,51 veces las peticiones/s; con geometría 0,99, 1,41 y 1,19. Mejora en 5 de 6 pares y empate en uno. El equipo se fue cargando durante la prueba (la cifra absoluta del binario nuevo bajó de 7.193 a 3.286 entre rondas), así que vale la razón dentro de cada par, no los valores absolutos. España sigue sin repetirse: `osrm-extract` de España gastó casi toda la memoria de este equipo y se descartó.
 
+**España tras `query_many` (2026-11-06, `ci/ab-osrm.sh`, `MIN_LAT=30`, 5 rondas, 16 núcleos y 15 GiB, Docker en WSL, los tres servidores a la vez):** OSRM v26.11.0, sobre el mismo extracto que en 2026-11-04.
+
+| | geko | OSRM CH | OSRM MLD |
+|---|---|---|---|
+| Sin geometría, peticiones/s | 2.204–2.341 | 2.510–2.645 | 1.663–1.870 |
+| Sin geometría, mediana | 6,7–7,1 ms | 6,0–6,2 ms | 8,5–9,5 ms |
+| Sin geometría, p99 | 11,7–12,8 ms | 9,9–10,8 ms | 13,3–16,3 ms |
+| Con geometría, peticiones/s | 1.159–1.267 | 762–826 | 673–702 |
+| Con geometría, mediana | 12,4–13,5 ms | 19,1–20,4 ms | 22,3–23,2 ms |
+| Con geometría, p99 | 21,3–24,8 ms | 33,5–39,5 ms | 39,0–44,9 ms |
+| RAM en reposo | 3,4 GiB | 3,9 GiB | 3,8 GiB |
+| RAM tras la carga | 4,5 GiB (pico 4,8) | 3,8 GiB | 3,7 GiB |
+| Disco | 1,1 GB | 4,1 GB (CH y MLD) | la misma |
+
+Sin geometría, CH sigue por delante, con un 90 % de sus peticiones/s para geko, y MLD por detrás. Con geometría, geko da 1,5 veces las de CH. Así que «más rápido que OSRM» vale con geometría y frente a MLD, no frente a CH sin geometría. La primera ronda de geko sin geometría (1.719 peticiones/s, p99 de 1,2 s) es de arranque en frío y queda fuera de los rangos. `wrk` marcó 48 y 32 errores de lectura por ronda en OSRM sin geometría, y 16 y 11 con ella, los mismos en cada ronda, sin investigar; ninguno en geko. Generación: 204 s. Arranque de geko: 18,8 s. No se repitió aquí la calidad: la de Baleares sigue siendo la referencia (punto 5).
+
 ### A. Base sólida y medida
 
 - [x] 1. Reducir la memoria y el tiempo de carga. El índice de calles guardaba los ferris, que llenaban miles de celdas: en Baleares, de 690 a 98 MB y de 4,7 a 0,47 s (`ad302b7`). En España, 3,4 GiB en reposo frente a 3,0 de OSRM.
 - [x] 2. Pasar a `mmap` el grafo y la jerarquía: **descartado por medición** (2026-11-04). La lectura es el 10 % de la carga de España (~2 s de ~20) y lo que pesaba era el cálculo, que se recortó en `Snapper` (`b6a262c`); el `mmap` queda como idea si algún día importa compartir la caché de páginas entre procesos. Lo que había: sin empezar: el formato no está alineado y `Graph` usa `Vec`, así que es un cambio grande. Los 30 s de carga de España son el motivo para hacerlo. Medido el 2026-11-04 en otro equipo (12 núcleos, WSL), con temporizadores en una copia y el equipo en reposo, la carga de España en `geko serve` tarda 20,3 s: `graph_io::read` 0,9 s; `turn::build` 2,3 s; `scc` y `Snapper` 8,1 s; `Cch::read` 1,1 s; `customize` 7,8 s (de ellos, `Lower::new` 1,4 s). Un banco en proceso, con el mínimo de 3 repeticiones, da lo mismo (unos 16 s: 0,3–0,5; 1,9; 7,0–9,4; 0,55; 5,5–7,2). La lectura es solo el 10 % de la carga, así que el `mmap` ahorra a lo sumo 2 s de 20, y lo que pesa es el cálculo: `scc`/`Snapper` y `customize`, casi el 80 %. Un primer intento, con el equipo ocupado, daba 42–75 s y hacía parecer que la lectura era la mitad: era ruido, y la comparación del lector nuevo con el antiguo no mostró diferencia medible (0,48 s frente a 0,48–0,54 s). Mirar antes el cálculo, y repetir siempre con el equipo en reposo. Dentro del cálculo, `scc` son solo 0,56 s y `Snapper::new` 6,8 s (0,9 s `by_shape` y 6,0 s las celdas: 26,7 M de inserciones en 2,4 M de celdas). Recorrer las formas en el orden del grafo, y no en el del `HashMap`, lo deja en 5,0 s; repartir las celdas en 16 bandas de filas, cada una en su hilo, en 2,4 s. Un hasher rápido por sí solo no ayudó (7,1 s). Efecto lateral: el índice es ahora determinista. Con el `HashMap` de semilla aleatoria, ante dos calles equidistantes en un cruce, dos arranques seguidos daban resultados distintos en 118 de 400 rutas de Baleares (distinta `duration_s` por el coste de giro de la arista elegida); con el índice nuevo, 0 de 400. Arranque de Baleares: 0,37–0,92 s antes y 0,30–0,47 s ahora. Pendiente medir el arranque completo de España con la versión nueva.
 - [x] 3. Añadir mimalloc en la `.so` del módulo (`beeb1b7`). Sin medir su efecto por separado.
-- [ ] 4. **Aplazado por decisión del propietario (2026-11-04).** Medir España completa contra OSRM. Hecha una primera vez (arriba): los hilos sí ayudan en la customización, y sin geometría geko va 2,5 veces más lento que CH. La causa más clara era una búsqueda por cada combinación de sentidos, hasta 4 por ruta, ya corregida con `query_many`, que además quita un tercio del estado de cada consulta. **Falta repetir la medición de España** con ese cambio (en Baleares, 2026-11-04, `query_many` multiplica las peticiones/s por 1,5 a 1,9 sin geometría en 3 de 3 pares, y por 1,2 a 1,4 con geometría en 2 de 3, con un empate; ver arriba): se paró por falta de memoria del sistema con los tres servidores a la vez (unos 9 GB), sin llegar a dar datos. Conviene repetirla con la máquina libre, o con un servidor cada vez. Si sigue por detrás, probar un orden por disección anidada: el de grado mínimo da 57,8 M de atajos y profundidad 2.115 en España.
+- [x] 4. Medir España completa contra OSRM. Hecho el 2026-11-06 (arriba): sin geometría, geko da el 90 % de las peticiones/s de CH, y con geometría 1,5 veces. Queda como idea un orden por disección anidada, por si importa ese 10 %. Lo anterior: hecha una primera vez (arriba): los hilos sí ayudan en la customización, y sin geometría geko va 2,5 veces más lento que CH. La causa más clara era una búsqueda por cada combinación de sentidos, hasta 4 por ruta, ya corregida con `query_many`, que además quita un tercio del estado de cada consulta. **Falta repetir la medición de España** con ese cambio (en Baleares, 2026-11-04, `query_many` multiplica las peticiones/s por 1,5 a 1,9 sin geometría en 3 de 3 pares, y por 1,2 a 1,4 con geometría en 2 de 3, con un empate; ver arriba): se paró por falta de memoria del sistema con los tres servidores a la vez (unos 9 GB), sin llegar a dar datos. Conviene repetirla con la máquina libre, o con un servidor cada vez. Si sigue por detrás, probar un orden por disección anidada: el de grado mínimo da 57,8 M de atajos y profundidad 2.115 en España.
 - [x] 5. Calibrar las duraciones: alineadas con `car.lua` de OSRM (2026-11-04). El pack lleva ahora sus velocidades por clase (motorway 90, primary 65, residential 25…) y `maxspeed_factor = 0,8` sobre `maxspeed`, que sustituye a la de la clase. En Baleares, 1.000 pares contra OSRM CH: duración con mediana 0,878 → 0,996 (p5–p95 de 0,714–0,978 a 0,969–1,024) y distancia a menos del 2 % del 88,6 % al 94,5 %. Sigue siendo una referencia, no tiempos reales: si se consiguen (trazas GPS), se recalibra.
 - [x] 6. Revisar los pares con más diferencia de distancia (2026-11-04). Con las velocidades de `car.lua` (punto 5) el peor ratio pasa de 0,667 a 0,797 por abajo y llega a 1,203 por arriba: la diferencia grande era del modelo de velocidades. Lo que queda (el 5,5 % de pares a más del 2 %) se mira con `diff` en los dos peores y es del objetivo: OSRM minimiza un peso (penaliza `service`, `side_road` y giros) y nosotros la duración, así que en un par elegimos una vía rápida más larga (49,8 km, 3.002 s frente a 41,4 km, 2.772 s de OSRM) y en otro una más corta (4,1 km frente a 5,2 km). No hay indicios de fallo. No se vio en un mapa: se comparó con `diff` en texto. Para comparar con justicia habría que pedir a OSRM la duración de nuestra ruta.
 - [x] 7. Sustituir el ejemplo `load` por `urls` y `ci/ab-osrm.sh`, con `wrk` en igualdad de condiciones.
@@ -299,44 +324,71 @@ Comprobado el 2026-11-04 con el binario de `geko` y la `.so` del módulo (Madrid
   - Un ámbito de provincias recorta a sus cajas: Málaga (`ES-MA`) da 138.175 nodos, frente a 597.010 de Andalucía (`ES-AN`), y 2 regiones del mismo extracto comparten una lectura.
   - España completa, sin cambios en el grafo: 3.793.285 nodos, 8.287.395 aristas y 14.590.189 giros, los mismos que antes de los fragmentos. Tarda 253 s, con pico de 3,2 GB (fragmento de `spain` 151 s, grafo 37 s, jerarquía 61 s). La cifra anterior (408 s, 3,1 GB) es de otra sesión, así que no prueba una mejora de tiempo. Los fragmentos son trabajo en disco, no van al bundle.
   - Una caja es un rectángulo: incluye algo de las provincias vecinas, y una vía se corta en su borde.
-- [x] 18. Publicación firmada de los packs en ghcr. Hecha el 2026-11-05: `es` y `lu` están públicos en `ghcr.io/candymaps/geko-router/countries/<país>`, con `format-1` y `pack-1`.
+- [x] 18. Publicación firmada de los packs en ghcr. Hecha el 2026-11-05: `es` y `lu` están públicos en `ghcr.io/candymaps/geko-router/countries/<país>`, con `format-1` y `pack-2`.
   - `ci/packs.sh`, `ci/oras.sh`, el binario `geko-router-pack-sign` y `.github/workflows/publish.yml`, en cada push a `main`. `GEKO_PACKS_DRY_RUN=1` firma los dos packs con una clave de prueba.
   - Comprobado con `geko` y la `.so` del módulo, sin `GEKO_ROUTER_PACKS` y en una carpeta de datos vacía: baja y verifica los dos packs sin credenciales, y `plan`, `build` y `serve` responden rutas de Madrid y Luxemburgo.
-  - `pack-1` ya no se puede cambiar: cualquier cambio en los ficheros publicados de un pack necesita subir su `version`.
+  - Una versión publicada no se puede cambiar: cualquier cambio en los ficheros de un pack, también su firma, necesita subir su `version`.
+  - Clave rotada el 2026-11-06: `geko` 0.3.0 solo confía en la nueva, y por eso los dos packs pasaron a `pack-2`. Comprobado: acepta `pack-2` y rechaza `pack-1`, que sigue en ghcr, con «not signed by a trusted key». Las imágenes anteriores de `geko` no aceptan lo firmado con la clave nueva.
 
 ### D. Tráfico completo
 
-- [ ] 19. Probar la capa en vivo con el feed real de Madrid, de punta a punta. Prueba de humo el 2026-11-04, con `geko serve` y el feed real: 1.248 aristas medidas, 127 lentas y una ruta del centro que pasa de 695 a 711 s. Queda abierto: no se ha comprobado el casado sensor a sensor ni el comportamiento en horas punta.
-- [ ] 20. Calibrar la conversión de nivel de servicio a velocidad (valores provisionales).
-- [ ] 21. Proveedores genéricos por `kind`. La URL, la cadencia, la caducidad, la licencia y lo que cubre Madrid ya salen del pack; falta que `madrid.rs` lea del pack las etiquetas y los factores de nivel de servicio, que siguen en el código.
-- [ ] 22. Casar los sensores al generar el bundle, no en servicio.
-- [ ] 23. Combinar varias fuentes: hoy hay un único poller y cada lectura sustituye a la anterior.
-- [ ] 24. Perfil histórico: mediciones, velocidad por hora y día, calendario de festivos, y decaimiento hacia el histórico en vez de a velocidad libre. Como mete datos de Madrid (CC BY) en el bundle junto al grafo de OSM (ODbL), hay que declarar en el manifiesto qué lleva cada licencia. El código sigue siendo AGPL; hoy no hay mezcla, porque el tráfico en vivo no va en el bundle.
-- [ ] 25. `traffic=none|historical|live` y `depart_at`, con la parte histórica en `traffic.coverage`.
-- [ ] 26. Incidencias: parser DATEX II y cierre real de vías (hoy lo más lento es un 5 % de la velocidad). La fuente de la DGT queda desactivada por defecto hasta cerrar el punto 28.
+- [ ] 19. Probar la capa en vivo con el feed real de Madrid, de punta a punta. Hecho el 2026-11-06 con `geko build` y `serve`, ámbito `ES-MD`, feeds reales de Madrid y de la DGT, de madrugada. Falta verla en una hora punta real.
+  - Casado sensor a sensor (`examples/sensors.rs`): de 3.295 sensores, 836 casados, 2.420 sin dirección legible en su descripción y 39 sin calle en su sentido. De los 812 casados con calle con nombre, en 750 (92,4 %) la descripción y OSM dicen la misma calle. Los 62 restantes, vistos los 25 primeros, son sobre todo cruces y plazas, y puede haber errores reales.
+  - Lectura de día, viernes 2026-11-06 a las 10:50, que no es hora punta: 1.267 aristas lentas y 3 cerradas, frente a 226 y 49 de madrugada. Tres rutas de 7 a 10 km suben solo un 0,3 % sobre velocidad libre (796 a 798 s, 716 a 718 s, 977 a 979 s), sin cambiar de camino. Va en línea con la reserva del punto 20.
+  - El 73 % de los sensores queda fuera por no decir su sentido. Es la mayor pérdida de cobertura, y es a propósito: frenar la calzada equivocada es peor que no saber.
+  - Prueba de caducidad y de varias fuentes con `Hub` en los tests: lo que una fuente deja de decir vuelve a lo habitual.
+- [x] 20. Calibrar la conversión de nivel de servicio a velocidad. Medido el 2026-11-06 con el histórico de octubre de 2026: 992.059 lecturas de 360 sensores que dicen su velocidad (`vmed`, tipo M30 y C30), como razón frente a su velocidad libre (percentil 85 con carga de hasta el 10 %).
+  - Por carga: 0–24, mediana 0,976; 25–49, 0,976; 50–74, 0,917 (media 0,882); 75–100, 0,828 (media 0,775, p10 0,425). Los umbrales entre nivel y carga salen de una lectura del feed de madrugada: nivel 0 hasta 45, 2 de 51 a 72, 3 desde 77.
+  - Factores del pack: 1,0, 0,97, 0,88 y 0,78, frente a 1,0, 0,7, 0,45 y 0,25 que había. Efecto: una ruta de 8 km por Madrid pasa de 796 a 798,5 s un lunes a las 8:30.
+  - **Reserva:** son vías rápidas. En la ciudad el retraso está sobre todo en los cruces, que ningún sensor mide, así que estos factores probablemente se quedan cortos en calles urbanas. Faltan tiempos reales (trazas GPS) para saberlo.
+- [x] 21. Proveedores genéricos por `kind`: `sensors-xml` (`sensors.rs`, antes `madrid.rs`), `datex2-situations` (`situations.rs`) y `history-csv` (`history.rs`). Etiquetas, direcciones, factores y distancias de casado salen del pack; la única conversión de coordenadas sigue siendo EPSG:25830, y otra se rechaza con un error.
+- [x] 22. Casar los sensores al generar el bundle: etapa `traffic`, con `router/traffic/sensors.tsv`. En servicio solo se casa un sensor que no estaba en el feed al generar, o si el bundle se generó con el tráfico apagado.
+- [x] 23. Combinar varias fuentes: un hilo por fuente y un `Hub` que las junta. Una fuente en vivo manda sobre lo habitual, entre varias gana la más lenta, y solo se recustomiza si algo cambia.
+- [x] 24. Perfil histórico: fuente `madrid-history` (septiembre y octubre de 2026, 96 MB por mes), 168 franjas por hora y día de la semana, con los festivos del calendario como domingo. Un dato en vivo caducado vuelve a lo habitual, y un reloj sigue el cambio de hora.
+  - Madrid: 803 aristas con perfil en un `build` de 30 s. A las 8:30 de un lunes hay 653 aristas lentas, y 75 a las 4:30 de un domingo.
+  - El perfil se aprende de la carga, pasada a nivel y a factor, así que hereda la reserva del punto 20. Solo cubre los sensores casados.
+  - Licencias: `meta.part_licenses` del bundle dice qué lleva cada parte; `router/traffic` lleva CC BY 4.0 y ODbL. Revisión de lectura, no asesoramiento jurídico.
+- [x] 25. `traffic=none|historical|live` y `depart_at` en `route` y `table`, con `historical` en `traffic.coverage`. La primera petición de una hora espera su customización (0,27 s en Madrid; en España, segundos), y se guardan 2 horas, porque cada una ocupa una jerarquía. `traffic=none` conserva la jerarquía a velocidad libre, que con tráfico activo también ocupa memoria.
+- [x] 26. Incidencias: parser DATEX II y cierre real de vías (`CLOSED`: ninguna ruta entra ni sale de esa arista, y `closed_edges` lo dice). La fuente de la DGT sigue desactivada por defecto hasta cerrar el punto 28.
+  - Un tramo es el camino más rápido entre sus extremos a velocidad libre, y se descarta si pasa de 1,5 veces la línea recta más 500 m. Probado con el feed real: 49 aristas cerradas en el ámbito de Madrid. No se han comprobado una a una.
+  - Sentido: `both` cierra los dos, `positive` y `negative` van de `from` a `to`. Lo segundo es una suposición sobre el feed.
+  - El cliente de la SDK no pide gzip, así que cada lectura son de 3,5 a 7 MB. El pack lee cada 5 minutos, y no cada minuto, por eso: unos 1,5 GB al día con la fuente activa.
 - [x] 27. **[gestión]** Leer las condiciones de uso de Madrid y la ficha del conjunto de histórico. Hecho el 2026-11-05, después de publicar `pack-1`, que solo declara la fuente (ver «Licencias»). Revisión de lectura, no asesoramiento jurídico.
-- [ ] 28. **[gestión]** Escribir a la DGT para aclarar su licencia. Es una precaución, no un permiso previo: no bloquea el punto 26 y solo condiciona activar la fuente por defecto.
+- [ ] 28. **[gestión]** Escribir a la DGT para aclarar su licencia. Es una precaución, no un permiso previo: no bloquea el punto 26 y solo condiciona activar la fuente por defecto. Texto propuesto, para el contacto del NAP:
+
+  > Buenos días. Quiero reutilizar el conjunto «Incidencias DGT DATEX II v3.7» del Punto de Acceso Nacional en un motor de rutas de código abierto. La ficha indica Creative Commons Attribution, pero el aviso legal enlazado reserva la reproducción y la transformación. ¿Podrían confirmarme por escrito qué licencia y versión se aplican, si se permite el uso comercial y las obras derivadas, y qué texto de atribución debo usar? Muchas gracias.
 
 ### E. Funciones de la fase posterior
 
-- [ ] 29. `match` (map matching).
-- [ ] 30. Isócronas.
-- [ ] 31. `trip`.
-- [ ] 32. Perfiles de bici, a pie y camión.
+- [x] 29. `match` (map matching): modelo oculto de Markov de Newson y Krumm, con hasta 5 calles por punto y rutas de la CCH entre ellas, por GET y POST. Donde ninguna ruta une dos puntos, acaba un tramo y empieza otro.
+  - Prueba del 2026-11-06 en Madrid: 95 puntos de una ruta de 7.774 m, desplazados unos metros, en 39 ms. Salen 7.729 m en un solo tramo. Es una traza sintética: faltan trazas GPS reales.
+  - `SIGMA_M` y `BETA_M` son los valores de partida, sin calibrar.
+- [x] 30. Isócronas: Dijkstra acotado sobre el grafo de giros y contorno de las celdas de una rejilla, en GeoJSON. Hasta 4 tiempos de hasta una hora.
+  - Madrid, desde Sol, 2026-11-06: 5 min en 5 ms, 15 y 30 min en 0,2 s, 60 min en 0,27 s.
+  - Se da el anillo de mayor área: no dice los huecos ni las islas aparte. No se ha comparado con otro motor.
+  - La demo (`/router/`) tiene también isócronas, `trip` y `match`, comprobadas con capturas en Edge sin interfaz sobre Madrid el 2026-11-06.
+- [x] 31. `trip`: matriz de la CCH, vecino más cercano y 2-opt, hasta 100 puntos, con `round=false` para no volver. Heurística: no siempre da el mejor orden. 8 puntos de Madrid en 6 ms.
+- [x] 32. Perfiles de bici, a pie y camión, en `[profiles] default`, con `data/road-classes-<perfil>.toml` en los packs `es` y `lu` (que pasa a `pack-3`).
+  - **Un perfil por bundle**, no `?profile=` por petición: cada perfil es otro grafo y otra jerarquía, y servir varios en un proceso multiplica la memoria. Para varios perfiles, una instancia por perfil. Si hace falta en un solo proceso, es trabajo aparte.
+  - Luxemburgo, 2026-11-06, misma ruta: coche 7,07 km en 606 s, camión 7,07 km en 623 s, bici 5,09 km en 1.180 s, a pie 4,85 km en 3.523 s. El grafo a pie tiene 3,2 veces las aristas del de coche.
+  - Velocidades y costes de giro provisionales, sin tiempos reales. Sin pendientes para bici y a pie. El camión mira `hgv`, `maxheight`, `maxweight` y `maxspeed:hgv`, con un vehículo de 4 m y 18 t fijado en el pack; una limitación en unidades que no sean métricas no se aplica.
+  - A pie no se aplican las restricciones de giro. Bici y a pie no leen tráfico.
 
 ### F. Publicación
 
 - [x] 33. CI del módulo: `ci.yml`, `pr-comment.yml`, `protected.yml`, `ci/test.sh`, `ci/affected.sh` y `deny.toml`, como en los tiles.
-  - `ci/test.sh` pasa clippy, reglas de dependencias, `cargo-deny`, tests y conformidad. Pasa en WSL; en GitHub aún no se ha ejecutado, porque solo corre en un PR.
+  - `ci/test.sh` pasa clippy, reglas de dependencias, `cargo-deny`, tests y conformidad, en WSL y en los PR de GitHub. El job `golden` pasa las 300 rutas sobre los datos congelados.
   - La protección de `main` y `dev` exige `test`, `golden` y `protected`.
 - [ ] 34. Publicar el módulo firmado y añadirlo a `ci/modules` del host.
-- [ ] 35. README, `AGENTS.md`, sección «Optimizaciones» y referencia de opciones del módulo.
-- [ ] 36. Actualizar PROJECT.md y el README del host con el módulo nuevo. Este plan vive en este repositorio, como lo propio del módulo.
+  - Hecho: `ci/modules.sh` y el job `module` de `publish.yml`, como en los tiles. Comprobado en local: compilado en `rust:<toolchain>-bookworm` (GLIBC 2.35 como máximo), firmado con la clave nueva, verificado, y `geko` lo carga, genera Luxemburgo y responde rutas.
+  - Falta: que llegue a `main`, hacer público el paquete `ghcr.io/candymaps/geko-router`, y mergear después la PR del host (rama `feature/router-module`): con `router` en `ci/modules`, la comprobación del host falla si el módulo no está publicado.
+- [x] 35. README (con la referencia de opciones), `AGENTS.md` (con «Optimizaciones»), `CLAUDE.md` y `CONTRIBUTING.md` del módulo.
+- [ ] 36. Actualizar PROJECT.md y el README del host con el módulo nuevo. Este plan vive en este repositorio, como lo propio del módulo. Escrito en la rama `feature/router-module` del host, con la página `jekyll/router.md`; falta mergearla, después del punto 34.
 - [x] 37. PR de `feature/router-module` a `dev`, y de `dev` a `main`. **Adelantado** (2026-11-05) para publicar los packs: los puntos 34 a 36 y los bloques D y E siguen abiertos, y llegarán a `main` con sus propias PR.
 
 ### Propuesta de corte de la v1
 
-**[decisión]** Bloques A, B y F, más los puntos 13–15 del pack `es`, con el tráfico de Madrid desactivado por defecto. El resto de C y D iría en versiones siguientes, y E al final.
+**[decisión]** Bloques A, B y F, más los puntos 13–15 del pack `es`, con el tráfico de Madrid desactivado por defecto. El resto de C y D iría en versiones siguientes, y E al final. Con este corte solo faltan los merges de los puntos 34 y 36.
 
 ## Riesgos
 

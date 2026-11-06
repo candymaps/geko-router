@@ -78,6 +78,8 @@ paths:
           in: query
           schema: { type: integer, minimum: 0, maximum: 3, default: 0 }
           description: How many other routes to look for.
+        - $ref: "#/components/parameters/traffic"
+        - $ref: "#/components/parameters/departAt"
       responses:
         "200":
           description: The route.
@@ -142,6 +144,8 @@ paths:
           explode: true
           schema: { type: array, items: { $ref: "#/components/schemas/Point" } }
         - $ref: "#/components/parameters/snapM"
+        - $ref: "#/components/parameters/traffic"
+        - $ref: "#/components/parameters/departAt"
       responses:
         "200": { $ref: "#/components/responses/Table" }
         "400": { $ref: "#/components/responses/Error" }
@@ -165,14 +169,201 @@ paths:
         "200": { $ref: "#/components/responses/Table" }
         "400": { $ref: "#/components/responses/Error" }
         "503": { $ref: "#/components/responses/Error" }
+  /v1/isochrone:
+    get:
+      summary: What can be reached from a point in some times.
+      description: |
+        A GeoJSON polygon for each time: the outline of the cells of a grid, about a hundredth of the
+        area across, that the roads reached touch. Holes and islands apart from it are not said. An hour
+        from the centre of Madrid takes about 0.3 s.
+      parameters:
+        - name: at
+          in: query
+          required: true
+          schema: { $ref: "#/components/schemas/Point" }
+        - name: seconds
+          in: query
+          required: true
+          schema: { type: string, examples: ["300,900"] }
+          description: Up to 4 times, separated by commas, from 1 to 3600.
+        - $ref: "#/components/parameters/snapM"
+        - $ref: "#/components/parameters/traffic"
+        - $ref: "#/components/parameters/departAt"
+      responses:
+        "200":
+          description: A FeatureCollection, the shortest time first.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [type, features, snapped, compute_us]
+                properties:
+                  type: { const: FeatureCollection }
+                  features: { type: array, items: { type: object } }
+                  snapped: { $ref: "#/components/schemas/Snapped" }
+                  traffic: { $ref: "#/components/schemas/Traffic" }
+                  compute_us: { type: integer }
+        "400": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /v1/match:
+    get:
+      summary: The roads a trace went along.
+      description: |
+        Map matching with a hidden Markov model, for up to 2,000 points in order. Where no route joins
+        two points a matching ends and another begins. A point with no street near, or that has not
+        moved 20 m from the last, is left out. A long trace goes better as a POST.
+      parameters:
+        - $ref: "#/components/parameters/tracePoints"
+        - $ref: "#/components/parameters/radiusM"
+        - $ref: "#/components/parameters/geometry"
+        - $ref: "#/components/parameters/traffic"
+        - $ref: "#/components/parameters/departAt"
+      responses:
+        "200": { $ref: "#/components/responses/Matchings" }
+        "400": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+    post:
+      summary: The roads a trace went along, with the points in the body.
+      parameters:
+        - $ref: "#/components/parameters/radiusM"
+        - $ref: "#/components/parameters/geometry"
+        - $ref: "#/components/parameters/traffic"
+        - $ref: "#/components/parameters/departAt"
+      requestBody: { $ref: "#/components/requestBodies/Points" }
+      responses:
+        "200": { $ref: "#/components/responses/Matchings" }
+        "400": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /v1/trip:
+    get:
+      summary: A good order to visit some points.
+      description: |
+        Up to 100 points, from the first: the nearest each time, improved by reversing stretches (2-opt).
+        Not always the best order. A POST takes the points in its body.
+      parameters:
+        - $ref: "#/components/parameters/tracePoints"
+        - $ref: "#/components/parameters/round"
+        - $ref: "#/components/parameters/geometry"
+        - $ref: "#/components/parameters/snapM"
+        - $ref: "#/components/parameters/traffic"
+        - $ref: "#/components/parameters/departAt"
+      responses:
+        "200": { $ref: "#/components/responses/Trip" }
+        "400": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+    post:
+      summary: A good order to visit some points, with the points in the body.
+      parameters:
+        - $ref: "#/components/parameters/round"
+        - $ref: "#/components/parameters/geometry"
+        - $ref: "#/components/parameters/snapM"
+        - $ref: "#/components/parameters/traffic"
+        - $ref: "#/components/parameters/departAt"
+      requestBody: { $ref: "#/components/requestBodies/Points" }
+      responses:
+        "200": { $ref: "#/components/responses/Trip" }
+        "400": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
 components:
+  requestBodies:
+    Points:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [points]
+            properties:
+              points: { type: array, minItems: 2, items: { $ref: "#/components/schemas/LatLon" } }
   parameters:
     snapM:
       name: snap_m
       in: query
       schema: { type: number, exclusiveMinimum: 0, maximum: 50000, default: 1000 }
       description: How far from a street, in metres, a point may be and still snap to it.
+    tracePoints:
+      name: point
+      in: query
+      required: true
+      style: form
+      explode: true
+      schema: { type: array, minItems: 2, items: { $ref: "#/components/schemas/Point" } }
+      description: Repeat the parameter for each point, in order.
+    radiusM:
+      name: radius_m
+      in: query
+      schema: { type: number, exclusiveMinimum: 0, maximum: 200, default: 50 }
+      description: How far from each point of the trace, in metres, to look for streets.
+    geometry:
+      name: geometry
+      in: query
+      schema: { type: boolean, default: true }
+      description: Whether to say the line of what is found.
+    round:
+      name: round
+      in: query
+      schema: { type: boolean, default: true }
+      description: Whether the trip goes back to the first point.
+    traffic:
+      name: traffic
+      in: query
+      schema: { type: string, enum: [none, historical, live] }
+      description: "What the weights say: `none`, the speeds of the road classes; `historical`, what is usual at that hour; `live`, the default, what the sources say now over what is usual."
+    departAt:
+      name: depart_at
+      in: query
+      schema: { type: string, format: date-time }
+      description: "RFC 3339, with its offset: what is usual at that time, instead of now. Not with `traffic=live` or `none`. The first request of an hour customizes its weights, and waits for it."
   responses:
+    Matchings:
+      description: The stretches matched, in order.
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [matchings, compute_us]
+            properties:
+              compute_us: { type: integer }
+              matchings:
+                type: array
+                items:
+                  type: object
+                  required: [points, snapped, duration_s, distance_m]
+                  properties:
+                    points: { type: array, items: { type: integer }, description: The points of the trace it covers. }
+                    snapped: { type: array, items: { type: array, minItems: 2, maxItems: 2, items: { type: number } }, description: "Where each lies on the road, as `[lon, lat]`." }
+                    duration_s: { type: number }
+                    distance_m: { type: number }
+                    geometry: { $ref: "#/components/schemas/LineString" }
+    Trip:
+      description: The order, and the route of each leg.
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [order, duration_s, distance_m, legs, compute_us]
+            properties:
+              order: { type: array, items: { type: integer }, description: The points, by their place in the request. }
+              duration_s: { type: number }
+              distance_m: { type: number }
+              legs:
+                type: array
+                items:
+                  allOf:
+                    - $ref: "#/components/schemas/RouteBody"
+                    - type: object
+                      properties:
+                        from: { type: integer }
+                        to: { type: integer }
+              traffic: { $ref: "#/components/schemas/Traffic" }
+              compute_us: { type: integer }
     Error:
       description: Something is wrong with the request, or the router is not ready (`Retry-After` says when to ask again).
       content:
@@ -223,17 +414,22 @@ components:
         lon: { type: number }
         distance_m: { type: number, description: How far the point was from the street. }
     Traffic:
-      description: What live traffic says. `null` when no source says anything (it is off, offline, or its data are too old).
+      description: What is known of traffic. `null` when nothing is (it is off, offline, or its data are too old, and there is no historical profile).
       type: [object, "null"]
       properties:
         slowed_edges: { type: integer, description: Edges slower than free flow; 0 when nothing is slow. }
-        age_s: { type: integer, description: Seconds since the sources last answered. }
-        source_updated: { type: [string, "null"], description: "When the source last updated its data, as it writes it: in Madrid, `03/11/2026 17:55:02`, local time." }
+        closed_edges: { type: integer, description: Edges closed by an incident. No route goes through them. }
+        age_s: { type: integer, description: "Seconds since the sources last answered. Only with live data." }
+        source_updated:
+          type: object
+          description: "Only with live data. When each source, by its name, last updated its data, as it writes it: in Madrid, `03/11/2026 17:55:02`, local time."
+          additionalProperties: { type: [string, "null"] }
         coverage:
           type: object
-          description: Only in a route. The share of its length that live data cover.
+          description: Only in a route. The share of its length known by live data, by what is usual, and by nothing but the speed of its road class.
           properties:
             live: { type: number }
+            historical: { type: number }
             free_flow: { type: number }
     LineString:
       type: object
@@ -295,4 +491,5 @@ components:
                         type: object
                         properties:
                           live: { type: number }
+                          historical: { type: number }
                           free_flow: { type: number }

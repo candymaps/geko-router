@@ -1,0 +1,38 @@
+# Madrid: what its measuring points recorded, every 15 minutes, from the open data portal of the
+# Ayuntamiento de Madrid, dataset 208627-0-transporte-ptomedida-historico (CC BY 4.0), a zip of 96 MB
+# with a CSV for each month. With traffic on, `geko build` learns from them the usual speed of each
+# edge with a sensor, by hour and day of the week.
+
+kind = "history-csv"
+enabled = true
+license = { name = "CC BY 4.0", attribution = "Ayuntamiento de Madrid, datos abiertos (CC BY 4.0)", url = "https://creativecommons.org/licenses/by/4.0/legalcode.es" }
+url = "https://datos.madrid.es/en/dataset/208627-0-transporte-ptomedida-historico"
+
+# What it measures, as madrid-sensors.
+regions = ["ES-M"]
+
+# Read once per build, so these only have to be valid.
+refresh_secs = 86400
+ttl_secs = 86400
+
+# The measurements of these sensors, with the same ids and the same levels.
+sensors = "madrid-sensors"
+
+# September and October of 2026, which are not holidays.
+files = [
+    "https://datos.madrid.es/en/dataset/208627-0-transporte-ptomedida-historico/resource/208627-161-transporte-ptomedida-historico/download/208627-161-transporte-ptomedida-historico.zip",
+    "https://datos.madrid.es/en/dataset/208627-0-transporte-ptomedida-historico/resource/208627-162-transporte-ptomedida-historico/download/208627-162-transporte-ptomedida-historico.zip",
+]
+
+delimiter = ";"
+time_format = "%Y-%m-%d %H:%M:%S"
+
+# The load at which levels 1, 2 and 3 begin, read from the feed on 2026-11-06: it says load and level.
+load_levels = [25, 50, 75]
+
+[columns]
+id = "id"
+time = "fecha"
+load = "carga"
+error = "error"
+error_ok = "N"

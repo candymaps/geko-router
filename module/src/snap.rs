@@ -72,6 +72,9 @@ pub struct Snapper {
     allowed: Vec<bool>,
 }
 
+/// The closest place of a shape to a point: how far, on which segment, where on it, and its coordinates.
+type Closest = (f64, u32, f64, [f64; 2]);
+
 fn cell(lat: f64, lon: f64) -> (i32, i32) {
     ((lat / CELL_DEG).floor() as i32, (lon / CELL_DEG).floor() as i32)
 }
@@ -167,6 +170,38 @@ impl Snapper {
             }
         }
         let Some((distance_m, shape, segment, t, point)) = best.filter(|b| b.0 <= max_m) else { return Vec::new() };
+        self.on_shape(graph, shape, segment, t, distance_m, point)
+    }
+
+    /// Up to `count` streets within `max_m`, closest first, each in the directions it can be used.
+    pub fn near(&self, graph: &Graph, lat: f64, lon: f64, max_m: f64, count: usize) -> Vec<Vec<Snap>> {
+        let p = [lat, lon];
+        let (row, col) = cell(lat, lon);
+        let cell_m = CELL_DEG * M_PER_DEG_LAT.min(M_PER_DEG_LON_EQUATOR * lat.to_radians().cos());
+        let rings = (max_m / cell_m).ceil() as i32 + 1;
+        let mut by_shape: Map<u32, Closest> = Map::default();
+        for r in row - rings..=row + rings {
+            for c in col - rings..=col + rings {
+                for &(shape, i) in self.cells[band_of(r)].get(&(r, c)).map_or(&[][..], Vec::as_slice) {
+                    if !self.by_shape[&shape].iter().any(|e| self.allowed[*e as usize]) {
+                        continue;
+                    }
+                    let points = &graph.shapes[shape as usize..];
+                    let (t, distance, point) = project(p, points[i as usize], points[i as usize + 1]);
+                    if distance <= max_m && by_shape.get(&shape).is_none_or(|b| distance < b.0) {
+                        by_shape.insert(shape, (distance, i, t, point));
+                    }
+                }
+            }
+        }
+        let mut found: Vec<(u32, Closest)> = by_shape.into_iter().collect();
+        found.sort_by(|a, b| a.1.0.total_cmp(&b.1.0).then(a.0.cmp(&b.0)));
+        found.truncate(count);
+        found.into_iter().map(|(shape, (distance, segment, t, point))| self.on_shape(graph, shape, segment, t, distance, point)).collect()
+    }
+
+    /// The directions of a street at a point of it.
+    fn on_shape(&self, graph: &Graph, shape: u32, segment: u32, t: f64, distance_m: f64, point: [f64; 2]) -> Vec<Snap> {
         let edges = &self.by_shape[&shape];
         let points = &graph.shapes[shape as usize..shape as usize + graph.edges[edges[0] as usize].shape_len as usize];
         let length = |a: [f64; 2], b: [f64; 2]| haversine_m((a[0], a[1]), (b[0], b[1]));
@@ -186,7 +221,7 @@ mod tests {
     use super::*;
     use crate::graph::Builder;
     use crate::osm::{Element, Tags};
-    use crate::profile::Car;
+    use crate::profile::Vehicle;
 
     fn tags(pairs: &[(&str, &str)]) -> Tags {
         pairs.iter().map(|(k, v)| ((*k).to_owned(), (*v).to_owned())).collect()
@@ -203,7 +238,7 @@ mod tests {
     }
 
     fn graph(elements: &[Element]) -> Graph {
-        let mut builder = Builder::new(Car::from_road_classes("[free_flow_kmh]\nresidential = 36\n").unwrap());
+        let mut builder = Builder::new(Vehicle::from_road_classes("[free_flow_kmh]\nresidential = 36\n").unwrap());
         elements.iter().for_each(|e| builder.first_pass(e));
         elements.iter().for_each(|e| builder.second_pass(e));
         builder.finish()

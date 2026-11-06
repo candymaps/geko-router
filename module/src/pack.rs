@@ -5,6 +5,7 @@
 //! <packs>/<country>/
 //!   pack.toml              country, version, profiles, time zone
 //!   data/road-classes.toml speeds of the car by road class
+//!   data/road-classes-<profile>.toml those of each other profile of `pack.toml`
 //!   data/calendar.toml     holidays, for the profiles of historical traffic
 //!   data/regions.toml      optional: the regions a scope can name, and which contains which
 //!   data/region-boxes.tsv  optional: a box that holds each partition
@@ -17,6 +18,7 @@
 //! instead, never downloaded: that of the repository, for the checks. A country without a pack is
 //! an error, as in the geocoder.
 
+use crate::profile::Mode;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -168,6 +170,8 @@ pub struct CountryPack {
     pub crs: Option<Crs>,
     /// The text of `data/road-classes.toml`, which the car profile reads and the stages that use it key on.
     pub road_classes: String,
+    /// That of the other profiles, by name.
+    other_classes: BTreeMap<String, String>,
     pub calendar: Calendar,
     pub regions: Vec<Region>,
     pub boxes: BTreeMap<RegionCode, GeoBox>,
@@ -190,10 +194,18 @@ impl CountryPack {
             return Err(invalid(PACK_FILE, "timezone is empty".into()));
         }
         if !pack.profiles.iter().any(|p| p == "car") {
-            return Err(invalid(PACK_FILE, "profiles has no `car`, the only profile there is".into()));
+            return Err(invalid(PACK_FILE, "profiles has no `car`, which every pack has".into()));
+        }
+        let mut other_classes = BTreeMap::new();
+        for name in pack.profiles.iter().filter(|p| *p != "car") {
+            let mode = Mode::parse(name).ok_or_else(|| invalid(PACK_FILE, format!("no profile `{name}`: they are {}", Mode::NAMES.join(", "))))?;
+            let file = format!("data/road-classes-{name}.toml");
+            let text = read(&file)?;
+            crate::profile::Vehicle::of(mode, &text).map_err(|e| invalid(&file, e.to_string()))?;
+            other_classes.insert(name.clone(), text);
         }
         let road_classes = read(ROAD_CLASSES_FILE)?;
-        crate::profile::Car::from_road_classes(&road_classes).map_err(|e| invalid(ROAD_CLASSES_FILE, e.to_string()))?;
+        crate::profile::Vehicle::from_road_classes(&road_classes).map_err(|e| invalid(ROAD_CLASSES_FILE, e.to_string()))?;
         let calendar: Calendar = toml::from_str(&read(CALENDAR_FILE)?).map_err(|e| invalid(CALENDAR_FILE, e.to_string()))?;
         if let Some(day) = calendar.fixed.iter().find(|d| !month_and_day(d)) {
             return Err(invalid(CALENDAR_FILE, format!("`{day}` is not a day as MM-DD")));
@@ -248,7 +260,12 @@ impl CountryPack {
                 parent = regions.iter().find(|r| r.code == *code).and_then(|r| r.parent.as_ref());
             }
         }
-        Ok(Self { country: pack.country, version: pack.version, profiles: pack.profiles, timezone: pack.timezone, crs: pack.crs, road_classes, calendar, regions, boxes, osm, sources })
+        Ok(Self { country: pack.country, version: pack.version, profiles: pack.profiles, timezone: pack.timezone, crs: pack.crs, road_classes, other_classes, calendar, regions, boxes, osm, sources })
+    }
+
+    /// The road classes of a profile of the pack, which `Setup::check` asked for.
+    pub fn classes(&self, profile: &str) -> &str {
+        self.other_classes.get(profile).map_or(&self.road_classes, String::as_str)
     }
 
     /// The boxes that hold `region`: its own, or those of the regions it contains. `None`: the pack
@@ -397,15 +414,22 @@ mod tests {
         RegionCode::new(code).unwrap()
     }
 
+    /// The files of the pack of Luxembourg, the smallest, in `dir`, which has a `data` folder.
+    fn copy_files(dir: &Path) {
+        let from = repository().join("lu");
+        std::fs::copy(from.join(PACK_FILE), dir.join(PACK_FILE)).unwrap();
+        for file in std::fs::read_dir(from.join("data")).unwrap() {
+            let file = file.unwrap();
+            std::fs::copy(file.path(), dir.join("data").join(file.file_name())).unwrap();
+        }
+    }
+
     /// The error of a copy of the pack of Luxembourg, the smallest, with `change` applied.
     fn broken(change: impl FnOnce(&Path)) -> String {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path().join("lu");
         std::fs::create_dir_all(dir.join("data")).unwrap();
-        let source = repository().join("lu");
-        for file in [PACK_FILE, ROAD_CLASSES_FILE, CALENDAR_FILE] {
-            std::fs::copy(source.join(file), dir.join(file)).unwrap();
-        }
+        copy_files(&dir);
         change(&dir);
         CountryPack::load(&dir).unwrap_err().to_string()
     }
@@ -430,7 +454,9 @@ mod tests {
         };
         assert!(broken(version("version = 0")).contains("version starts at 1"));
         assert!(broken(version("versoin = 1")).contains(PACK_FILE));
-        assert!(broken(edit(PACK_FILE, "[\"car\"]", "[\"bike\"]")).contains("car"));
+        assert!(broken(edit(PACK_FILE, "[\"car\", ", "[")).contains("car"));
+        assert!(broken(edit(PACK_FILE, "\"foot\"", "\"plane\"")).contains("plane"));
+        assert!(broken(|dir| std::fs::remove_file(dir.join("data/road-classes-foot.toml")).unwrap()).contains("road-classes-foot"));
         assert!(broken(edit(ROAD_CLASSES_FILE, "motorway = 90", "motorway = 0")).contains(ROAD_CLASSES_FILE));
         assert!(broken(edit(CALENDAR_FILE, "\"05-09\"", "\"May 9\"")).contains("May 9"));
         assert!(broken(|dir| std::fs::remove_file(dir.join(CALENDAR_FILE)).unwrap()).contains(CALENDAR_FILE));
@@ -459,9 +485,7 @@ mod tests {
         assert_eq!(packs.get(country("LU")).unwrap().country, country("LU"));
         assert!(packs.get(country("FR")).unwrap_err().to_string().contains("no country pack of the router for FR"));
         std::fs::create_dir_all(tmp.path().join("fr/data")).unwrap();
-        for file in [PACK_FILE, ROAD_CLASSES_FILE, CALENDAR_FILE] {
-            std::fs::copy(repository().join("lu").join(file), tmp.path().join("fr").join(file)).unwrap();
-        }
+        copy_files(&tmp.path().join("fr"));
         assert!(Packs::at(tmp.path().into(), true).get(country("FR")).unwrap_err().to_string().contains("it says it is of LU"));
     }
 

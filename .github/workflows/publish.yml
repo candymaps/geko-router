@@ -1,10 +1,19 @@
-# The publication of what reaches main: on every push to it, the country packs that changed, signed,
-# in ghcr.io/candymaps/geko-router/countries/<country> (tags format-<n>, pack-<n> and
-# <version>-<commit>). The module itself is published later (docs/ROUTER_PLAN.md, point 34).
+# The publication of what reaches main, on every push to it:
+# - the country packs that changed, signed, in ghcr.io/candymaps/geko-router/countries/<country>
+#   (tags format-<n>, pack-<n> and <version>-<commit>);
+# - the module, with the version of Cargo.toml, if the push changed what goes into it (not only
+#   documentation or packs): ghcr.io/candymaps/geko-router, tags <version>-<commit>-<platform> and
+#   contract-<n>-<platform>, signed (ci/modules.sh), which geko downloads;
+# - when that version has no GitHub release yet (it was raised in Cargo.toml), also the tag
+#   <version>-<platform> on the module, and the git tag v<version> on the pushed commit, with its
+#   GitHub release. Raising the version is how a release is made. A tag v<version> without a release
+#   (pushed by hand, or left by a cut publication) is released only if it is on the pushed commit;
+#   on another, the version must be raised.
 #
 # Needs the secret GEKO_PACK_SIGNING_KEY, the key of the other artifacts of geko, and GEKO_HOST_TOKEN
-# while the host is private; GitHub's own token pushes. Not in a fork. The first time, the package of
-# each country is born private: make it public in GitHub («Package settings»), or no geko can read it.
+# while the host is private; GitHub's own token pushes. Not in a fork. The first time, each package
+# (a country, the module) is born private: make it public in GitHub («Package settings»), or no geko
+# can read it.
 name: publish
 
 on:
@@ -41,3 +50,86 @@ jobs:
       - run: ci/packs.sh publish
         env:
           GEKO_PACK_SIGNING_KEY: ${{ secrets.GEKO_PACK_SIGNING_KEY }}
+
+  module:
+    if: github.repository == 'candymaps/geko-router'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      # The host (Cargo.toml), while it is a private repository: GEKO_HOST_TOKEN, with read access to
+      # its contents.
+      - env:
+          HOST_TOKEN: ${{ secrets.GEKO_HOST_TOKEN }}
+        if: env.HOST_TOKEN != ''
+        run: git config --global url."https://x-access-token:$HOST_TOKEN@github.com/candymaps/geko.git".insteadOf https://github.com/candymaps/geko.git
+      - id: version
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          version=$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' Cargo.toml)
+          # A release when v<version> has none on GitHub. Any other error of gh stops the job, so
+          # that a failed query does not publish a version twice.
+          release=0
+          if ! out=$(gh release view "v$version" 2>&1); then
+            [[ $out == *"release not found"* ]] || { echo "$out" >&2; exit 1; }
+            tagged=$(git rev-parse -q --verify "refs/tags/v$version^{commit}" || true)
+            if [ -z "$tagged" ] || [ "$tagged" = "$(git rev-parse HEAD)" ]; then
+              release=1
+            else
+              echo "::error::v$version is tagged on $tagged, not on this commit, and has no release: raise the version in Cargo.toml"
+              exit 1
+            fi
+          fi
+          # A new module only when the push changed what goes into it, or makes a release. Without
+          # the commit before the push (a new branch, a forced push), always.
+          module=1
+          before="${{ github.event.before }}"
+          if [ "$release" = 0 ] && git cat-file -e "$before^{commit}" 2> /dev/null \
+            && git diff --quiet "$before" HEAD -- module openapi.yaml Cargo.toml Cargo.lock rust-toolchain.toml; then
+            module=0
+          fi
+          {
+            echo "version=$version"
+            echo "release=$release"
+            echo "module=$module"
+          } >> "$GITHUB_OUTPUT"
+      - if: steps.version.outputs.module == '1'
+        run: rustup toolchain install
+      - if: steps.version.outputs.module == '1'
+        uses: Swatinem/rust-cache@v2
+      - if: steps.version.outputs.module == '1'
+        uses: oras-project/setup-oras@v1
+      - if: steps.version.outputs.module == '1'
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | oras login ghcr.io -u "${{ github.actor }}" --password-stdin
+      # The module, compiled on the Debian of the image of geko, whose glibc is older than that of
+      # the runner: a module built here would not start there. Its dependencies are fetched here,
+      # where the token reads the host, and the container builds offline with them.
+      - if: steps.version.outputs.module == '1'
+        env:
+          GEKO_RELEASE: ${{ steps.version.outputs.release }}
+        run: |
+          cargo fetch --locked
+          toolchain=$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)
+          docker run --rm -v "$PWD:/src" -w /src -e GEKO_RELEASE -e CARGO_TARGET_DIR=/src/target \
+            -u "$(id -u):$(id -g)" -e HOME=/tmp -e CARGO_HOME=/tmp/cargo -e CARGO_NET_OFFLINE=true \
+            -v "$HOME/.cargo/registry:/tmp/cargo/registry" -v "$HOME/.cargo/git:/tmp/cargo/git" \
+            "rust:$toolchain-bookworm" ci/modules.sh build target/modules
+      - if: steps.version.outputs.module == '1'
+        run: ci/modules.sh publish target/modules
+        env:
+          GEKO_PACK_SIGNING_KEY: ${{ secrets.GEKO_PACK_SIGNING_KEY }}
+      # The tag goes last: if something could not be published, the next run makes the release again.
+      # gh creates the tag and its GitHub release in one call, so neither is left without the other.
+      # The notes start with where the release is; GitHub appends the changes since the last one.
+      - if: steps.version.outputs.release == '1'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          gh release create "v$VERSION" --target "$GITHUB_SHA" --title "v$VERSION" --generate-notes \
+            --notes "$(printf 'The router module: `ghcr.io/candymaps/geko-router:%s-<platform>`, which geko downloads with `[modules.router] version = "%s"`.' "$VERSION" "$VERSION")"

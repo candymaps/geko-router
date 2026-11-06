@@ -9,7 +9,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::osm::{Element, MemberKind, tag};
-use crate::profile::{Car, Direction};
+use crate::profile::{Vehicle, Direction};
 
 const EARTH_RADIUS_M: f64 = 6_371_008.8;
 
@@ -149,17 +149,17 @@ impl Fragment {
 /// Reads the OSM objects of an extract with the profile of its country, keeping only the nodes
 /// inside `clip`, if it has one: a node left out cuts its way, as one outside the extract does.
 pub struct Builder {
-    car: Car,
+    car: Vehicle,
     clip: Option<Vec<GeoBox>>,
     roads: Roads,
 }
 
 impl Builder {
-    pub fn new(car: Car) -> Self {
+    pub fn new(car: Vehicle) -> Self {
         Self::clipped(car, None)
     }
 
-    pub fn clipped(car: Car, clip: Option<Vec<GeoBox>>) -> Self {
+    pub fn clipped(car: Vehicle, clip: Option<Vec<GeoBox>>) -> Self {
         Self { car, clip, roads: Roads::default() }
     }
 
@@ -174,7 +174,7 @@ impl Builder {
                 self.roads.add_way(UsableWay { id: *id, refs: refs.clone(), speed_kmh: way.speed_kmh, direction: way.direction, ferry: way.ferry, duration_s: way.duration_s, name: tag(tags, "name").or_else(|| tag(tags, "ref")).filter(|n| !n.is_empty()).map(str::to_owned) });
             }
             Element::Relation { id, members, tags } => {
-                if tag(tags, "type") != Some("restriction") || !self.roads.seen_relations.insert(*id) {
+                if tag(tags, "type") != Some("restriction") || !self.car.obeys_restrictions() || !self.roads.seen_relations.insert(*id) {
                     return;
                 }
                 let Some(kind) = tag(tags, "restriction").and_then(restriction_kind) else { return };
@@ -371,8 +371,8 @@ mod tests {
         ]
     }
 
-    fn car() -> Car {
-        Car::from_road_classes(CLASSES).unwrap()
+    fn car() -> Vehicle {
+        Vehicle::from_road_classes(CLASSES).unwrap()
     }
 
     #[test]
@@ -429,7 +429,7 @@ mod tests {
             road(11, &[4, 5]),
             road(12, &[3, 6]),
         ];
-        let mut builder = Builder::new(Car::from_road_classes(CLASSES).unwrap());
+        let mut builder = Builder::new(Vehicle::from_road_classes(CLASSES).unwrap());
         elements.iter().for_each(|e| builder.first_pass(e));
         elements.iter().for_each(|e| builder.second_pass(e));
         let graph = builder.finish();
@@ -450,7 +450,7 @@ mod tests {
     }
 
     fn build(elements: &[Element]) -> Graph {
-        let mut builder = Builder::new(Car::from_road_classes(CLASSES).unwrap());
+        let mut builder = Builder::new(Vehicle::from_road_classes(CLASSES).unwrap());
         elements.iter().for_each(|e| builder.first_pass(e));
         elements.iter().for_each(|e| builder.second_pass(e));
         builder.finish()
