@@ -22,7 +22,7 @@ What it serves, under `/router/`:
 - **Isochrones** (`/router/v1/isochrone`): what can be reached from a point in up to four times, as GeoJSON polygons.
 - **Map matching** (`/router/v1/match`): the roads a trace of up to 2,000 points went along.
 - **Trips** (`/router/v1/trip`): a good order to visit up to 100 points, and its routes. It is a heuristic, not always the best order.
-- **Status** (`/router/v1/status`), the **API** (`/router/openapi.yaml`, also listed in `/docs` of geko) and a **demo** (`/router/`): click on the map for the start and the end.
+- **Status** (`/router/v1/status`), the **API** (`/router/openapi.yaml`, also listed in `/docs` of geko) and a **demo** (`/router/`) of routes, isochrones, trips and map matching: click on the map.
 
 On top of the same foundation as the rest of geko:
 

@@ -14,6 +14,7 @@ aside { background: var(--panel); border-right: 1px solid var(--line); padding: 
 h1 { font-size: 18px; margin: 0 0 4px; }
 .muted { color: var(--muted); font-size: 12px; }
 label { display: block; margin: 12px 0 4px; font-weight: 600; font-size: 12px; }
+select { width: 100%; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--ink); font: inherit; }
 input[type=text], input[type=number], input[type=password] { width: 100%; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--ink); font: inherit; }
 .row { display: flex; gap: 8px; align-items: center; }
 .row > * { flex: 1; }
@@ -40,6 +41,25 @@ ol li { margin-bottom: 2px; }
   <div class="muted">Click the map to set the origin, then the destination. There is no base map: the lines are the routes themselves. Scroll to zoom, drag to move.</div>
   <label for="key">API key (only if the server asks for one)</label>
   <input id="key" type="password" autocomplete="off">
+  <label for="mode">What to ask</label>
+  <select id="mode">
+    <option value="route">Route</option>
+    <option value="isochrone">Isochrone</option>
+    <option value="trip">Trip</option>
+    <option value="match">Match a trace</option>
+  </select>
+  <div id="others" hidden>
+    <div id="hint" class="muted" style="margin-top:8px"></div>
+    <div id="times">
+      <label for="seconds">Seconds, up to four</label>
+      <input id="seconds" type="text" value="300,600,900">
+    </div>
+    <div class="row" style="margin-top:12px">
+      <button class="primary" id="run">Run</button>
+      <button id="reset" class="fit">Clear</button>
+    </div>
+  </div>
+  <div id="routing">
   <label for="from">From (lat,lon)</label>
   <input id="from" type="text" placeholder="39.5696,2.6502">
   <label for="to">To (lat,lon)</label>
@@ -53,6 +73,7 @@ ol li { margin-bottom: 2px; }
     <button id="swap" class="fit" title="Swap origin and destination">&#8645;</button>
     <button id="clear" class="fit">Clear</button>
   </div>
+  </div>
   <div id="error" class="error" hidden></div>
   <div id="stats" class="stats"></div>
   <div id="routes" class="routes"></div>
@@ -64,7 +85,12 @@ ol li { margin-bottom: 2px; }
 const base = location.pathname.replace(/\/?$/, "/");
 const $ = id => document.getElementById(id);
 const canvas = $("view"), ctx = canvas.getContext("2d");
-const state = { from: null, to: null, routes: [], chosen: 0, view: null, bounds: null };
+const state = { from: null, to: null, routes: [], chosen: 0, view: null, bounds: null, points: [], areas: [], lines: [] };
+const hints = {
+  isochrone: "Click the map: what can be reached from there.",
+  trip: "Click the stops, the first being the start, then Run.",
+  match: "Click a trace along the roads, in order, then Run.",
+};
 const colors = () => { const s = getComputedStyle(document.documentElement); return { accent: s.getPropertyValue("--accent"), alt: s.getPropertyValue("--alt"), ink: s.getPropertyValue("--ink"), muted: s.getPropertyValue("--muted"), good: s.getPropertyValue("--good") }; };
 
 const headers = () => { const key = $("key").value.trim(); return key ? { "X-Api-Key": key } : {}; };
@@ -96,6 +122,17 @@ function draw() {
   const c = colors(), ratio = window.devicePixelRatio || 1;
   const order = state.routes.map((_, i) => i).sort((a, b) => (a === state.chosen) - (b === state.chosen));
   ctx.lineJoin = "round"; ctx.lineCap = "round";
+  const trace = coordinates => coordinates.forEach(([lon, lat], j) => { const [x, y] = toPixel(lat, lon); j ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
+  for (const ring of state.areas) {
+    ctx.beginPath(); trace(ring); ctx.closePath();
+    ctx.fillStyle = c.accent; ctx.globalAlpha = 0.18; ctx.fill();
+    ctx.globalAlpha = 0.9; ctx.strokeStyle = c.accent; ctx.lineWidth = 1.5 * ratio; ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+  for (const line of state.lines) {
+    ctx.beginPath(); trace(line);
+    ctx.strokeStyle = c.accent; ctx.lineWidth = 4 * ratio; ctx.stroke();
+  }
   for (const i of order) {
     const route = state.routes[i];
     if (!route.geometry) continue;
@@ -112,6 +149,11 @@ function draw() {
     ctx.fillStyle = c.ink;
     for (const step of chosen.steps) if (step.maneuver !== "depart" && step.maneuver !== "arrive") { const [x, y] = toPixel(step.location[1], step.location[0]); ctx.beginPath(); ctx.arc(x, y, 3 * ratio, 0, 7); ctx.fill(); }
   }
+  state.points.forEach((point, i) => {
+    const [x, y] = toPixel(point[0], point[1]);
+    ctx.beginPath(); ctx.arc(x, y, 9 * ratio, 0, 7); ctx.fillStyle = i ? c.alt : c.good; ctx.fill();
+    ctx.fillStyle = "#fff"; ctx.font = `${11 * ratio}px system-ui`; ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.fillText(i, x, y);
+  });
   for (const [point, color] of [[state.from, c.good], [state.to, "#cf222e"]]) {
     if (!point) continue;
     const [x, y] = toPixel(point[0], point[1]);
@@ -175,6 +217,43 @@ async function go() {
   } catch (e) { error.textContent = e.message; error.hidden = false; state.routes = []; show(); draw(); }
 }
 
+const mode = () => $("mode").value;
+function fitTo(coordinates) {
+  if (!coordinates.length) return;
+  const lats = coordinates.map(p => p[1]), lons = coordinates.map(p => p[0]);
+  fit([Math.min(...lats), Math.min(...lons), Math.max(...lats), Math.max(...lons)]);
+}
+function reset() {
+  state.points = []; state.areas = []; state.lines = []; state.routes = []; state.from = state.to = null;
+  $("error").hidden = true; $("stats").textContent = ""; show(); draw();
+}
+async function run() {
+  const error = $("error"); error.hidden = true;
+  const wanted = mode(), points = state.points.map(p => "point=" + p).join("&");
+  if (state.points.length < (wanted === "isochrone" ? 1 : 2)) { error.textContent = hints[wanted]; error.hidden = false; return; }
+  state.areas = []; state.lines = [];
+  try {
+    if (wanted === "isochrone") {
+      const body = await call(`v1/isochrone?at=${state.points[0]}&seconds=${encodeURIComponent($("seconds").value)}`);
+      state.areas = body.features.map(f => f.geometry.coordinates[0]).reverse();
+      fitTo(state.areas[0] || []);
+      $("stats").textContent = `${body.features.length} outlines in ${(body.compute_us / 1000).toFixed(1)} ms.`;
+    } else if (wanted === "trip") {
+      const body = await call(`v1/trip?${points}`);
+      state.lines = body.legs.map(leg => leg.geometry.coordinates);
+      fitTo(state.lines.flat());
+      $("stats").textContent = `Order ${body.order.join(", ")}: ${duration(body.duration_s)}, ${distance(body.distance_m)}, in ${(body.compute_us / 1000).toFixed(1)} ms.`;
+    } else {
+      const body = await call(`v1/match?${points}`);
+      state.lines = body.matchings.map(m => m.geometry.coordinates);
+      fitTo(state.lines.flat());
+      const metres = body.matchings.reduce((sum, m) => sum + m.distance_m, 0);
+      $("stats").textContent = `${body.matchings.length} stretch(es), ${distance(metres)}, in ${(body.compute_us / 1000).toFixed(1)} ms.`;
+    }
+  } catch (e) { error.textContent = e.message; error.hidden = false; }
+  draw();
+}
+
 let clicks = 0, drag = null;
 canvas.addEventListener("pointerdown", e => { drag = { x: e.clientX, y: e.clientY, lat: state.view && state.view.lat, lon: state.view && state.view.lon, moved: false }; canvas.setPointerCapture(e.pointerId); });
 canvas.addEventListener("pointermove", e => {
@@ -187,8 +266,12 @@ canvas.addEventListener("pointerup", e => {
   if (drag && !drag.moved && state.view) {
     const ratio = window.devicePixelRatio || 1, box = canvas.getBoundingClientRect();
     const point = toCoordinate((e.clientX - box.left) * ratio, (e.clientY - box.top) * ratio);
-    setPoint(clicks++ % 2 ? "to" : "from", point);
-    if (state.from && state.to && clicks % 2 === 0) go(); else draw();
+    if (mode() === "isochrone") { state.points = [point]; run(); }
+    else if (mode() !== "route") { state.points.push(point); draw(); }
+    else {
+      setPoint(clicks++ % 2 ? "to" : "from", point);
+      if (state.from && state.to && clicks % 2 === 0) go(); else draw();
+    }
   }
   drag = null;
 });
@@ -205,6 +288,14 @@ canvas.addEventListener("wheel", e => {
 }, { passive: false });
 
 $("go").onclick = go;
+$("run").onclick = run;
+$("reset").onclick = reset;
+$("mode").onchange = () => {
+  const wanted = mode(), routing = wanted === "route";
+  $("routing").hidden = !routing; $("others").hidden = routing; $("times").hidden = wanted !== "isochrone";
+  $("hint").textContent = hints[wanted] || "";
+  setPoint("from", null); setPoint("to", null); clicks = 0; reset();
+};
 $("swap").onclick = () => { const a = $("from").value; $("from").value = $("to").value; $("to").value = a; };
 $("clear").onclick = () => { setPoint("from", null); setPoint("to", null); state.routes = []; clicks = 0; $("error").hidden = true; $("stats").textContent = ""; show(); draw(); };
 for (const id of ["from", "to"]) $(id).addEventListener("keydown", e => { if (e.key === "Enter") go(); });

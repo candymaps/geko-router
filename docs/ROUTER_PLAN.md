@@ -334,6 +334,7 @@ Comprobado el 2026-11-04 con el binario de `geko` y la `.so` del módulo (Madrid
 
 - [ ] 19. Probar la capa en vivo con el feed real de Madrid, de punta a punta. Hecho el 2026-11-06 con `geko build` y `serve`, ámbito `ES-MD`, feeds reales de Madrid y de la DGT, de madrugada. Falta verla en una hora punta real.
   - Casado sensor a sensor (`examples/sensors.rs`): de 3.295 sensores, 836 casados, 2.420 sin dirección legible en su descripción y 39 sin calle en su sentido. De los 812 casados con calle con nombre, en 750 (92,4 %) la descripción y OSM dicen la misma calle. Los 62 restantes, vistos los 25 primeros, son sobre todo cruces y plazas, y puede haber errores reales.
+  - Lectura de día, viernes 2026-11-06 a las 10:50, que no es hora punta: 1.267 aristas lentas y 3 cerradas, frente a 226 y 49 de madrugada. Tres rutas de 7 a 10 km suben solo un 0,3 % sobre velocidad libre (796 a 798 s, 716 a 718 s, 977 a 979 s), sin cambiar de camino. Va en línea con la reserva del punto 20.
   - El 73 % de los sensores queda fuera por no decir su sentido. Es la mayor pérdida de cobertura, y es a propósito: frenar la calzada equivocada es peor que no saber.
   - Prueba de caducidad y de varias fuentes con `Hub` en los tests: lo que una fuente deja de decir vuelve a lo habitual.
 - [x] 20. Calibrar la conversión de nivel de servicio a velocidad. Medido el 2026-11-06 con el histórico de octubre de 2026: 992.059 lecturas de 360 sensores que dicen su velocidad (`vmed`, tipo M30 y C30), como razón frente a su velocidad libre (percentil 85 con carga de hasta el 10 %).
@@ -365,6 +366,7 @@ Comprobado el 2026-11-04 con el binario de `geko` y la `.so` del módulo (Madrid
 - [x] 30. Isócronas: Dijkstra acotado sobre el grafo de giros y contorno de las celdas de una rejilla, en GeoJSON. Hasta 4 tiempos de hasta una hora.
   - Madrid, desde Sol, 2026-11-06: 5 min en 5 ms, 15 y 30 min en 0,2 s, 60 min en 0,27 s.
   - Se da el anillo de mayor área: no dice los huecos ni las islas aparte. No se ha comparado con otro motor.
+  - La demo (`/router/`) tiene también isócronas, `trip` y `match`, comprobadas con capturas en Edge sin interfaz sobre Madrid el 2026-11-06.
 - [x] 31. `trip`: matriz de la CCH, vecino más cercano y 2-opt, hasta 100 puntos, con `round=false` para no volver. Heurística: no siempre da el mejor orden. 8 puntos de Madrid en 6 ms.
 - [x] 32. Perfiles de bici, a pie y camión, en `[profiles] default`, con `data/road-classes-<perfil>.toml` en los packs `es` y `lu` (que pasa a `pack-3`).
   - **Un perfil por bundle**, no `?profile=` por petición: cada perfil es otro grafo y otra jerarquía, y servir varios en un proceso multiplica la memoria. Para varios perfiles, una instancia por perfil. Si hace falta en un solo proceso, es trabajo aparte.
