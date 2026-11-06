@@ -1,6 +1,6 @@
 # Módulo `geko-router`: plan
 
-Estado (2026-11-06): en desarrollo, con el código en `dev` y `main` de `candymaps/geko-router`. Bloques B y C hechos, y los packs `es` y `lu` publicados con la clave de firma nueva (`pack-2`). El módulo aún no se publica (punto 34) y la medición del punto 4 sigue aplazada. Lo hecho y lo que falta está en «Seguimiento». Las decisiones abiertas están al final.
+Estado (2026-11-06): en desarrollo, con el código en `dev` y `main` de `candymaps/geko-router`. Bloques A, B y C hechos, y los packs `es` y `lu` publicados con la clave de firma nueva (`pack-2`). El módulo se publica en cuanto `publish.yml` llegue a `main` (punto 34). Lo hecho y lo que falta está en «Seguimiento». Las decisiones abiertas están al final.
 
 ## Objetivo
 
@@ -199,12 +199,12 @@ Lista de trabajo, en el orden previsto. Al cerrar un punto se marca aquí, con s
 
 | Bloque | Hechos | Pendiente |
 |---|---|---|
-| A. Base sólida y medida | 6 de 7 | 4 (aplazado) |
+| A. Base sólida y medida | 7 de 7 | |
 | B. API de la fase 1 | 5 de 5 | |
 | C. Packs de país | 6 de 6 | |
 | D. Tráfico completo | 1 de 10 | 19 a 26 y 28 |
 | E. Funciones de la fase posterior | 0 de 4 | 29 a 32 |
-| F. Publicación | 2 de 5 | 34, 35 y 36 |
+| F. Publicación | 3 de 5 | 34 y 36, a falta de mergear |
 
 **Hecho (2026-11-04):** grafo con giros, restricciones y ferris; CCH con customización en caliente; `v1/route` con pasos y alternativas, `v1/nearest`, `v1/table` (etiquetas muchos-a-muchos, 1.000.000 de celdas como máximo) y `v1/status`; `openapi.yaml` y demo; packs `es` y `lu` leídos en tiempo de ejecución, con etapas por extracto; tráfico en vivo de los sensores de Madrid, opcional y desactivado por defecto, con `traffic.coverage`.
 
@@ -249,12 +249,28 @@ Generación del router: 8,3 M de aristas, 14,6 M de giros, 408 s y 3,1 GB de pic
 
 **Efecto de `query_many` (misma sesión, Baleares, pares alternos de `9a41f87` y `ad3cec1`):** sin geometría 1,87, 1,54 y 1,51 veces las peticiones/s; con geometría 0,99, 1,41 y 1,19. Mejora en 5 de 6 pares y empate en uno. El equipo se fue cargando durante la prueba (la cifra absoluta del binario nuevo bajó de 7.193 a 3.286 entre rondas), así que vale la razón dentro de cada par, no los valores absolutos. España sigue sin repetirse: `osrm-extract` de España gastó casi toda la memoria de este equipo y se descartó.
 
+**España tras `query_many` (2026-11-06, `ci/ab-osrm.sh`, `MIN_LAT=30`, 5 rondas, 16 núcleos y 15 GiB, Docker en WSL, los tres servidores a la vez):** OSRM v26.11.0, sobre el mismo extracto que en 2026-11-04.
+
+| | geko | OSRM CH | OSRM MLD |
+|---|---|---|---|
+| Sin geometría, peticiones/s | 2.204–2.341 | 2.510–2.645 | 1.663–1.870 |
+| Sin geometría, mediana | 6,7–7,1 ms | 6,0–6,2 ms | 8,5–9,5 ms |
+| Sin geometría, p99 | 11,7–12,8 ms | 9,9–10,8 ms | 13,3–16,3 ms |
+| Con geometría, peticiones/s | 1.159–1.267 | 762–826 | 673–702 |
+| Con geometría, mediana | 12,4–13,5 ms | 19,1–20,4 ms | 22,3–23,2 ms |
+| Con geometría, p99 | 21,3–24,8 ms | 33,5–39,5 ms | 39,0–44,9 ms |
+| RAM en reposo | 3,4 GiB | 3,9 GiB | 3,8 GiB |
+| RAM tras la carga | 4,5 GiB (pico 4,8) | 3,8 GiB | 3,7 GiB |
+| Disco | 1,1 GB | 4,1 GB (CH y MLD) | la misma |
+
+Sin geometría, CH sigue por delante, con un 90 % de sus peticiones/s para geko, y MLD por detrás. Con geometría, geko da 1,5 veces las de CH. Así que «más rápido que OSRM» vale con geometría y frente a MLD, no frente a CH sin geometría. La primera ronda de geko sin geometría (1.719 peticiones/s, p99 de 1,2 s) es de arranque en frío y queda fuera de los rangos. `wrk` marcó 48 y 32 errores de lectura por ronda en OSRM sin geometría, y 16 y 11 con ella, los mismos en cada ronda, sin investigar; ninguno en geko. Generación: 204 s. Arranque de geko: 18,8 s. No se repitió aquí la calidad: la de Baleares sigue siendo la referencia (punto 5).
+
 ### A. Base sólida y medida
 
 - [x] 1. Reducir la memoria y el tiempo de carga. El índice de calles guardaba los ferris, que llenaban miles de celdas: en Baleares, de 690 a 98 MB y de 4,7 a 0,47 s (`ad302b7`). En España, 3,4 GiB en reposo frente a 3,0 de OSRM.
 - [x] 2. Pasar a `mmap` el grafo y la jerarquía: **descartado por medición** (2026-11-04). La lectura es el 10 % de la carga de España (~2 s de ~20) y lo que pesaba era el cálculo, que se recortó en `Snapper` (`b6a262c`); el `mmap` queda como idea si algún día importa compartir la caché de páginas entre procesos. Lo que había: sin empezar: el formato no está alineado y `Graph` usa `Vec`, así que es un cambio grande. Los 30 s de carga de España son el motivo para hacerlo. Medido el 2026-11-04 en otro equipo (12 núcleos, WSL), con temporizadores en una copia y el equipo en reposo, la carga de España en `geko serve` tarda 20,3 s: `graph_io::read` 0,9 s; `turn::build` 2,3 s; `scc` y `Snapper` 8,1 s; `Cch::read` 1,1 s; `customize` 7,8 s (de ellos, `Lower::new` 1,4 s). Un banco en proceso, con el mínimo de 3 repeticiones, da lo mismo (unos 16 s: 0,3–0,5; 1,9; 7,0–9,4; 0,55; 5,5–7,2). La lectura es solo el 10 % de la carga, así que el `mmap` ahorra a lo sumo 2 s de 20, y lo que pesa es el cálculo: `scc`/`Snapper` y `customize`, casi el 80 %. Un primer intento, con el equipo ocupado, daba 42–75 s y hacía parecer que la lectura era la mitad: era ruido, y la comparación del lector nuevo con el antiguo no mostró diferencia medible (0,48 s frente a 0,48–0,54 s). Mirar antes el cálculo, y repetir siempre con el equipo en reposo. Dentro del cálculo, `scc` son solo 0,56 s y `Snapper::new` 6,8 s (0,9 s `by_shape` y 6,0 s las celdas: 26,7 M de inserciones en 2,4 M de celdas). Recorrer las formas en el orden del grafo, y no en el del `HashMap`, lo deja en 5,0 s; repartir las celdas en 16 bandas de filas, cada una en su hilo, en 2,4 s. Un hasher rápido por sí solo no ayudó (7,1 s). Efecto lateral: el índice es ahora determinista. Con el `HashMap` de semilla aleatoria, ante dos calles equidistantes en un cruce, dos arranques seguidos daban resultados distintos en 118 de 400 rutas de Baleares (distinta `duration_s` por el coste de giro de la arista elegida); con el índice nuevo, 0 de 400. Arranque de Baleares: 0,37–0,92 s antes y 0,30–0,47 s ahora. Pendiente medir el arranque completo de España con la versión nueva.
 - [x] 3. Añadir mimalloc en la `.so` del módulo (`beeb1b7`). Sin medir su efecto por separado.
-- [ ] 4. **Aplazado por decisión del propietario (2026-11-04).** Medir España completa contra OSRM. Hecha una primera vez (arriba): los hilos sí ayudan en la customización, y sin geometría geko va 2,5 veces más lento que CH. La causa más clara era una búsqueda por cada combinación de sentidos, hasta 4 por ruta, ya corregida con `query_many`, que además quita un tercio del estado de cada consulta. **Falta repetir la medición de España** con ese cambio (en Baleares, 2026-11-04, `query_many` multiplica las peticiones/s por 1,5 a 1,9 sin geometría en 3 de 3 pares, y por 1,2 a 1,4 con geometría en 2 de 3, con un empate; ver arriba): se paró por falta de memoria del sistema con los tres servidores a la vez (unos 9 GB), sin llegar a dar datos. Conviene repetirla con la máquina libre, o con un servidor cada vez. Si sigue por detrás, probar un orden por disección anidada: el de grado mínimo da 57,8 M de atajos y profundidad 2.115 en España.
+- [x] 4. Medir España completa contra OSRM. Hecho el 2026-11-06 (arriba): sin geometría, geko da el 90 % de las peticiones/s de CH, y con geometría 1,5 veces. Queda como idea un orden por disección anidada, por si importa ese 10 %. Lo anterior: hecha una primera vez (arriba): los hilos sí ayudan en la customización, y sin geometría geko va 2,5 veces más lento que CH. La causa más clara era una búsqueda por cada combinación de sentidos, hasta 4 por ruta, ya corregida con `query_many`, que además quita un tercio del estado de cada consulta. **Falta repetir la medición de España** con ese cambio (en Baleares, 2026-11-04, `query_many` multiplica las peticiones/s por 1,5 a 1,9 sin geometría en 3 de 3 pares, y por 1,2 a 1,4 con geometría en 2 de 3, con un empate; ver arriba): se paró por falta de memoria del sistema con los tres servidores a la vez (unos 9 GB), sin llegar a dar datos. Conviene repetirla con la máquina libre, o con un servidor cada vez. Si sigue por detrás, probar un orden por disección anidada: el de grado mínimo da 57,8 M de atajos y profundidad 2.115 en España.
 - [x] 5. Calibrar las duraciones: alineadas con `car.lua` de OSRM (2026-11-04). El pack lleva ahora sus velocidades por clase (motorway 90, primary 65, residential 25…) y `maxspeed_factor = 0,8` sobre `maxspeed`, que sustituye a la de la clase. En Baleares, 1.000 pares contra OSRM CH: duración con mediana 0,878 → 0,996 (p5–p95 de 0,714–0,978 a 0,969–1,024) y distancia a menos del 2 % del 88,6 % al 94,5 %. Sigue siendo una referencia, no tiempos reales: si se consiguen (trazas GPS), se recalibra.
 - [x] 6. Revisar los pares con más diferencia de distancia (2026-11-04). Con las velocidades de `car.lua` (punto 5) el peor ratio pasa de 0,667 a 0,797 por abajo y llega a 1,203 por arriba: la diferencia grande era del modelo de velocidades. Lo que queda (el 5,5 % de pares a más del 2 %) se mira con `diff` en los dos peores y es del objetivo: OSRM minimiza un peso (penaliza `service`, `side_road` y giros) y nosotros la duración, así que en un par elegimos una vía rápida más larga (49,8 km, 3.002 s frente a 41,4 km, 2.772 s de OSRM) y en otro una más corta (4,1 km frente a 5,2 km). No hay indicios de fallo. No se vio en un mapa: se comparó con `diff` en texto. Para comparar con justicia habría que pedir a OSRM la duración de nuestra ruta.
 - [x] 7. Sustituir el ejemplo `load` por `urls` y `ci/ab-osrm.sh`, con `wrk` en igualdad de condiciones.
@@ -339,14 +355,16 @@ Comprobado el 2026-11-04 con el binario de `geko` y la `.so` del módulo (Madrid
 - [x] 33. CI del módulo: `ci.yml`, `pr-comment.yml`, `protected.yml`, `ci/test.sh`, `ci/affected.sh` y `deny.toml`, como en los tiles.
   - `ci/test.sh` pasa clippy, reglas de dependencias, `cargo-deny`, tests y conformidad, en WSL y en los PR de GitHub. El job `golden` pasa las 300 rutas sobre los datos congelados.
   - La protección de `main` y `dev` exige `test`, `golden` y `protected`.
-- [ ] 34. Publicar el módulo firmado y añadirlo a `ci/modules` del host. Hoy `publish.yml` solo publica los packs, y `ci/modules` lista `geocoder` y `tiles`.
-- [ ] 35. README, `AGENTS.md`, sección «Optimizaciones» y referencia de opciones del módulo.
-- [ ] 36. Actualizar PROJECT.md y el README del host con el módulo nuevo. Este plan vive en este repositorio, como lo propio del módulo.
+- [ ] 34. Publicar el módulo firmado y añadirlo a `ci/modules` del host.
+  - Hecho: `ci/modules.sh` y el job `module` de `publish.yml`, como en los tiles. Comprobado en local: compilado en `rust:<toolchain>-bookworm` (GLIBC 2.35 como máximo), firmado con la clave nueva, verificado, y `geko` lo carga, genera Luxemburgo y responde rutas.
+  - Falta: que llegue a `main`, hacer público el paquete `ghcr.io/candymaps/geko-router`, y mergear después la PR del host (rama `feature/router-module`): con `router` en `ci/modules`, la comprobación del host falla si el módulo no está publicado.
+- [x] 35. README (con la referencia de opciones), `AGENTS.md` (con «Optimizaciones»), `CLAUDE.md` y `CONTRIBUTING.md` del módulo.
+- [ ] 36. Actualizar PROJECT.md y el README del host con el módulo nuevo. Este plan vive en este repositorio, como lo propio del módulo. Escrito en la rama `feature/router-module` del host, con la página `jekyll/router.md`; falta mergearla, después del punto 34.
 - [x] 37. PR de `feature/router-module` a `dev`, y de `dev` a `main`. **Adelantado** (2026-11-05) para publicar los packs: los puntos 34 a 36 y los bloques D y E siguen abiertos, y llegarán a `main` con sus propias PR.
 
 ### Propuesta de corte de la v1
 
-**[decisión]** Bloques A, B y F, más los puntos 13–15 del pack `es`, con el tráfico de Madrid desactivado por defecto. El resto de C y D iría en versiones siguientes, y E al final. Con este corte faltan los puntos 34, 35 y 36, y el 4, que está aplazado.
+**[decisión]** Bloques A, B y F, más los puntos 13–15 del pack `es`, con el tráfico de Madrid desactivado por defecto. El resto de C y D iría en versiones siguientes, y E al final. Con este corte solo faltan los merges de los puntos 34 y 36.
 
 ## Riesgos
 
