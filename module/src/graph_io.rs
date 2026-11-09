@@ -97,6 +97,18 @@ impl Reader<'_> {
     }
 }
 
+/// Whether the file at `path` is a graph of the format this code reads, from its first bytes alone:
+/// for a load left for later, which must still say no at once. A file that is not there says nothing.
+pub fn check(path: &Path) -> Result<()> {
+    let mut magic = [0; 8];
+    match std::fs::File::open(path).and_then(|mut file| std::io::Read::read_exact(&mut file, &mut magic)) {
+        Ok(()) if &magic == MAGIC => Ok(()),
+        Ok(()) => Err(GekoError::Data(format!("{}: not a graph file", path.display()))),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e.into()),
+    }
+}
+
 pub fn read(path: &Path) -> Result<Graph> {
     let truncated = || GekoError::Data("the graph file is truncated".into());
     let bytes = std::fs::read(path)?;

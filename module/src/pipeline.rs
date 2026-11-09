@@ -172,6 +172,15 @@ fn mark_checked(setup: &Setup) -> Result<()> {
     Ok(())
 }
 
+/// Takes back the note of a check that did not finish: `.checked` is written after the extracts, and
+/// the sources of traffic come later. The next build, in `MIN_WAIT`, asks again.
+fn forget_check(setup: &Setup) -> Result<()> {
+    match fs::remove_file(checked_path(setup)) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.into()),
+        _ => Ok(()),
+    }
+}
+
 /// The shortest time between two builds of `geko up`.
 const MIN_WAIT: std::time::Duration = std::time::Duration::from_secs(3600);
 
@@ -203,6 +212,23 @@ pub fn licenses(setup: &Setup) -> Vec<LicenseNotice> {
     sources.extend(live::wanted_history(setup));
     list.extend(sources.into_iter().map(|s| LicenseNotice { source: s.name, name: s.license.name, attribution: s.license.attribution, url: Some(s.license.url) }));
     list
+}
+
+const LAST_BUILD: &str = "last_build.router.json";
+
+/// Writes the stages of this build for the dashboard: the report of the host is one file that every
+/// module's build overwrites, so each module keeps its own.
+fn write_last_build(data_dir: &Path, stages: &[geko_module_sdk::stages::StageRecord]) {
+    let finished = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+    let report = serde_json::json!({ "finished_unix": finished, "stages": stages });
+    if let Err(e) = std::fs::write(data_dir.join(LAST_BUILD), report.to_string()) {
+        tracing::warn!(error = %e, "cannot write the stages of this build");
+    }
+}
+
+/// The stages of the last build of this module, as `write_last_build` left them; `null` before one.
+pub fn last_build(data_dir: &Path) -> serde_json::Value {
+    std::fs::read(data_dir.join(LAST_BUILD)).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
 }
 
 /// Before `plan`, `fetch`, `build` and `purge`: the packs of the scope, downloaded or checked.
@@ -417,9 +443,27 @@ fn source_file(setup: &Setup, dl: &dyn Downloader, source: &Source, url: &str) -
     Ok((path, outcome.sha256))
 }
 
+/// `source_file` for what can be left out: traffic is an option of the routes, so a source that does
+/// not answer degrades them and does not stop the build (docs/ROUTER_PLAN.md, «Riesgos»). It goes into
+/// `missing`, once. An error of the disk is no outage, and does stop it.
+fn traffic_file(setup: &Setup, dl: &dyn Downloader, source: &Source, url: &str, missing: &mut Vec<String>) -> Result<Option<(PathBuf, String)>> {
+    match source_file(setup, dl, source, url) {
+        Ok(file) => Ok(Some(file)),
+        Err(e @ GekoError::Data(_)) => {
+            tracing::warn!(source = %source.name, "{e}; built without it");
+            if !missing.contains(&source.name) {
+                missing.push(source.name.clone());
+            }
+            Ok(None)
+        }
+        Err(e) => Err(e),
+    }
+}
+
 /// The stage of traffic, with traffic on: the sensors of the feeds matched to the graph, once and not
 /// while serving, and the usual speeds of those edges. `None` when no source of the scope needs it.
-/// Returns what it left and whether it was already there.
+/// Returns what it left, with the sources that did not answer in `missing`, and whether it was
+/// already there.
 fn traffic_stage(setup: &Setup, dl: &dyn Downloader, graph_digest: &str, graph_file: &Path, force: bool) -> Result<Option<(PathBuf, serde_json::Value, bool)>> {
     let sensor_sources = live::wanted_sensors(setup);
     let history_sources = live::wanted_history(setup);
@@ -428,8 +472,9 @@ fn traffic_stage(setup: &Setup, dl: &dyn Downloader, graph_digest: &str, graph_f
     }
     let mut key = Key::new("traffic").add("code", TRAFFIC_CODE).add("graph", graph_digest);
     let mut feeds = Vec::new();
+    let mut missing = Vec::new();
     for source in &sensor_sources {
-        let (path, digest) = source_file(setup, dl, source, &source.url)?;
+        let Some((path, digest)) = traffic_file(setup, dl, source, &source.url, &mut missing)? else { continue };
         key = key.add(&source.name, &digest).add(&format!("{}.spec", source.name), &format!("{:?}", source.table));
         feeds.push((source, path));
     }
@@ -437,10 +482,18 @@ fn traffic_stage(setup: &Setup, dl: &dyn Downloader, graph_digest: &str, graph_f
     for source in &history_sources {
         let spec = history::Spec::of(source).map_err(GekoError::Data)?;
         let mut paths = Vec::new();
+        let mut digests = Vec::new();
         for url in &spec.files {
-            let (path, digest) = source_file(setup, dl, source, url)?;
-            key = key.add(url, &digest);
+            let Some((path, digest)) = traffic_file(setup, dl, source, url, &mut missing)? else { continue };
+            digests.push((url, digest));
             paths.push(path);
+        }
+        // Usual speeds from some of the months would be other speeds, not fewer of them.
+        if paths.len() < spec.files.len() {
+            continue;
+        }
+        for (url, digest) in &digests {
+            key = key.add(url, digest);
         }
         key = key.add(&format!("{}.spec", source.name), &format!("{:?}", source.table));
         files.push((source, spec, paths));
@@ -470,7 +523,7 @@ fn traffic_stage(setup: &Setup, dl: &dyn Downloader, graph_digest: &str, graph_f
     }
     let mut profiled_edges = 0;
     for (source, spec, paths) in files {
-        let Some(sensor_source) = sensor_sources.iter().find(|s| s.name == spec.sensors) else {
+        let Some(sensor_source) = sensor_sources.iter().find(|s| s.name == spec.sensors && bundled.sensors.contains_key(&s.name)) else {
             tracing::warn!(source = %source.name, sensors = %spec.sensors, "no usual speeds: its sensors are not in use");
             continue;
         };
@@ -489,7 +542,7 @@ fn traffic_stage(setup: &Setup, dl: &dyn Downloader, graph_digest: &str, graph_f
         bundled.profiles.insert(source.name.clone(), profile);
     }
     bundled.write(&dir)?;
-    let info = serde_json::json!({ "sensors": matched_sensors, "profiled_edges": profiled_edges });
+    let info = serde_json::json!({ "sensors": matched_sensors, "profiled_edges": profiled_edges, "missing": missing });
     let stamp = incremental::seal(&dir, key, &[], info)?;
     Ok(Some((dir, stamp.info, false)))
 }
@@ -551,6 +604,7 @@ pub fn build(setup: &Setup, dl: &dyn Downloader, force: bool) -> Result<Built> {
     };
     log.done("hierarchy", hierarchy_reused);
 
+    let checking = dl.checks_for_updates();
     let traffic = traffic_stage(setup, dl, &stamp.output, &dir.join(GRAPH_FILE), force)?;
 
     let mut report = fetched.report;
@@ -562,6 +616,13 @@ pub fn build(setup: &Setup, dl: &dyn Downloader, force: bool) -> Result<Built> {
     if let Some((from, info, reused)) = traffic {
         log.done("traffic", reused);
         writeln!(report, "traffic: {} sensors matched, {} edges with usual speeds", info["sensors"], info["profiled_edges"]).unwrap();
+        let missing: Vec<&str> = info["missing"].as_array().into_iter().flatten().filter_map(|s| s.as_str()).collect();
+        if !missing.is_empty() {
+            writeln!(report, "traffic: built without {}, which did not answer", missing.join(", ")).unwrap();
+        }
+        if !missing.is_empty() || (checking && !dl.checks_for_updates()) {
+            forget_check(setup)?;
+        }
         parts.push(BundlePart { from, to: TRAFFIC_PART.into() });
         let mut names: Vec<String> = live::wanted_sensors(setup).into_iter().chain(live::wanted_history(setup)).map(|s| s.license.name).collect();
         names.push(osm_license().name);
@@ -570,12 +631,14 @@ pub fn build(setup: &Setup, dl: &dyn Downloader, force: bool) -> Result<Built> {
         part_licenses[TRAFFIC_PART] = names.into();
     }
     let packs: serde_json::Map<String, serde_json::Value> = setup.scope.countries().map(|c| Ok((c.to_string(), setup.packs.get(c)?.version.into()))).collect::<Result<_>>()?;
+    let stages = log.into_records();
+    write_last_build(&setup.data_dir, &stages);
     Ok(Built {
         report,
         parts,
         meta: serde_json::json!({ "nodes": nodes, "edges": edges, "arcs": arcs, "packs": packs, "part_licenses": part_licenses }),
         licenses: licenses(setup),
-        stages: log.into_records(),
+        stages,
         report_extra: serde_json::Map::new(),
     })
 }
@@ -584,6 +647,16 @@ pub fn build(setup: &Setup, dl: &dyn Downloader, force: bool) -> Result<Built> {
 mod tests {
     use super::*;
     use geko_module_sdk::country::RegionCode;
+    use geko_module_sdk::download::DownloadOutcome;
+
+    /// A source of traffic that fails as `error` says.
+    struct Failing(fn() -> GekoError);
+
+    impl Downloader for Failing {
+        fn fetch(&self, _: &DownloadRequest, _: &Path) -> Result<DownloadOutcome> {
+            Err((self.0)())
+        }
+    }
 
     const INDEX: &str = r#"{ "features": [
         { "properties": { "id": "andalucia", "parent": "spain", "urls": { "pbf": "https://download.geofabrik.de/europe/spain/andalucia-latest.osm.pbf" } } },
@@ -604,6 +677,41 @@ mod tests {
     fn jobs_of(setup: &Setup) -> Result<BTreeMap<String, Job>> {
         let countries = setup.scope.countries().map(|c| (c.lowercase(), setup.packs.get(c).unwrap().osm.clone())).collect();
         jobs(setup, &Catalog::parse(INDEX.as_bytes(), countries)?)
+    }
+
+    fn madrid(setup: &Setup) -> Source {
+        setup.packs.get(CountryCode::new("ES").unwrap()).unwrap().sources["madrid-sensors"].clone()
+    }
+
+    #[test]
+    fn a_source_of_traffic_that_does_not_answer_is_left_out_once() {
+        let s = setup(&[("ES", &[])], "");
+        let source = madrid(&s);
+        let dl = Failing(|| GekoError::Data("GET x returned HTTP 503".into()));
+        let mut missing = Vec::new();
+        assert!(traffic_file(&s, &dl, &source, "https://x/a", &mut missing).unwrap().is_none());
+        assert!(traffic_file(&s, &dl, &source, "https://x/b", &mut missing).unwrap().is_none());
+        assert_eq!(missing, ["madrid-sensors"]);
+    }
+
+    #[test]
+    fn an_error_of_the_disk_stops_the_build() {
+        let s = setup(&[("ES", &[])], "");
+        let dl = Failing(|| std::io::Error::other("disk full").into());
+        let mut missing = Vec::new();
+        assert!(traffic_file(&s, &dl, &madrid(&s), "https://x/a", &mut missing).is_err());
+        assert!(missing.is_empty());
+    }
+
+    #[test]
+    fn a_check_taken_back_is_due_again() {
+        let tmp = tempfile::tempdir().unwrap();
+        let s = Setup { data_dir: tmp.path().into(), ..setup(&[("ES", &[])], "") };
+        forget_check(&s).unwrap();
+        mark_checked(&s).unwrap();
+        assert!(!check_due(&s));
+        forget_check(&s).unwrap();
+        assert!(check_due(&s));
     }
 
     #[test]

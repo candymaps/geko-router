@@ -12,7 +12,7 @@
 
 # geko-router
 
-The routing module of [geko](https://github.com/candymaps/geko). **Status: in development, and off by default in geko.** It meets the contract of the host and passes its conformance suite; it downloads the OSM extracts of the scope, builds a graph with turn costs and restrictions and a Customizable Contraction Hierarchy, leaves its part of the bundle (all of Spain in about 4 minutes, 1.1 GB on disk) and serves it. Cars only, for now. The plan, with its decisions and measurements, is in [docs/ROUTER_PLAN.md](docs/ROUTER_PLAN.md) (in Spanish).
+The routing module of [geko](https://github.com/candymaps/geko). **Status: published, and off by default in geko.** It meets the contract of the host and passes its conformance suite; it downloads the OSM extracts of the scope, builds a graph with turn costs and restrictions and a Customizable Contraction Hierarchy, leaves its part of the bundle (all of Spain in about 4 minutes, 1.1 GB on disk) and serves it. Cars only, for now. The plan, with its decisions and measurements, is in [docs/ROUTER_PLAN.md](docs/ROUTER_PLAN.md) (in Spanish).
 
 What it serves, under `/router/`:
 
@@ -22,7 +22,8 @@ What it serves, under `/router/`:
 - **Isochrones** (`/router/v1/isochrone`): what can be reached from a point in up to four times, as GeoJSON polygons.
 - **Map matching** (`/router/v1/match`): the roads a trace of up to 2,000 points went along.
 - **Trips** (`/router/v1/trip`): a good order to visit up to 100 points, and its routes. It is a heuristic, not always the best order.
-- **Status** (`/router/v1/status`), the **API** (`/router/openapi.yaml`, also listed in `/docs` of geko) and a **demo** (`/router/`) of routes, isochrones, trips and map matching: click on the map.
+- **Status and statistics** (`/router/v1/status`, `/router/v1/stats`): the bundle and the graph loaded, the sources, the options in effect and the last build; and, since the module started, the requests, errors and time of every route and the last hour minute by minute. They feed the dashboard of geko.
+- The **API** (`/router/openapi.yaml`, also listed in `/docs` of geko) and a **demo** (`/router/`) of routes, isochrones, trips and map matching: click on the map.
 
 On top of the same foundation as the rest of geko:
 
@@ -62,7 +63,7 @@ enabled = true              # also its cadence (refresh_secs) and how long a rea
 
 [serve]
 preload = true              # false: load the graph with the first request that needs it, which waits for it;
-                            # until then v1/status answers 503, and the process takes no memory for it
+                            # until then v1/status says ready = false, and the process takes no memory for it
 ```
 
 `[sources.<name>]` admits only the keys of the file of that source, and naming a source that no pack of the scope has is an error. The profile and the speeds of the pack change what is generated, so they are in the stamps of the build.
@@ -73,7 +74,7 @@ Downloading requires `[data] accept_licenses = true` in `geko.toml`, as for ever
 
 geko-router is licensed under the [GNU Affero General Public License v3.0](LICENSE) (AGPL-3.0-only). You may use, study, modify and share it freely. If you distribute it, modified or not, you must pass on its source code under the same license; if you modify it and let others use it over a network, you must offer them the source code of your version. Running it, or modifying it for internal use only, requires nothing more.
 
-The graph is a derived database of OpenStreetMap (ODbL) and carries its attribution. With traffic on, `/v1/attribution` also gives each source that is used, its license and that its data are modified, and `traffic.source_updated` the date of the feed. Sources are not redistributed: each installation downloads them from their origin. The source of the DGT is disabled by default until its license is clear: `[sources.dgt-incidents] enabled = true` is your decision. With traffic on, the bundle says the license of each part (`part_licenses`). Contributions are accepted under the same license, from the collaborators of the repository; see [CONTRIBUTING.md](CONTRIBUTING.md).
+The graph is a derived database of OpenStreetMap (ODbL) and carries its attribution. With traffic on, `/v1/attribution` also gives each source that is used, its license and that its data are modified, and `traffic.source_updated` the date of the feed. Sources are not redistributed: each installation downloads them from their origin. The source of the DGT is disabled by default: `[sources.dgt-incidents] enabled = true` is your decision, and it takes about 1.5 GB a day. With traffic on, the bundle says the license of each part (`part_licenses`). Contributions are accepted under the same license, from the collaborators of the repository; see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 Read the full terms in [LICENSE](LICENSE).
 

@@ -48,6 +48,7 @@ Before optimizing, check this list so as not to repeat what was already discarde
 - `table` with labels on the elimination tree (2026-11-04, Baleares, 1,000×1,000): 0.25–0.44 s, against about 230 s for one query per cell.
 - Customizing with threads (2026-11-04, Spain): 12 s with one, 4.2 s with 16.
 - One stage per extract, with its stamp (2026-11-04): with nothing changed, Baleares and Luxembourg take 2 ms; with new speeds in `lu`, only Luxembourg is read again (4.3 s, against 24 s with the download).
+- The statistics of `stats.rs` (2026-11-06, Luxembourg, one route over HTTP, `wrk` with 8 connections, 4 interleaved rounds of 8 s with and without them): 10,700 against 10,817 requests per second (−1.1 %), the rounds from −3.6 % to +1.3 %, while the rounds themselves drifted from 11,500 to 10,200: within the noise. They stay.
 
 **Did not work (do not repeat):**
 - `mmap` for the graph and the hierarchy (2026-11-04, Spain): reading is 10 % of the load (about 2 s of 20); what weighs is the computing. It remains an idea only to share the page cache between processes.

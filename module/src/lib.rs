@@ -22,6 +22,7 @@ pub mod scc;
 pub mod situations;
 mod serve;
 pub mod snap;
+mod stats;
 pub mod steps;
 pub mod traffic;
 pub mod trip;
@@ -65,6 +66,7 @@ impl Module for RouterModule {
                 Route { method: Method::Get, path: "".into(), pool: false, public: true },
                 Route { method: Method::Get, path: "openapi.yaml".into(), pool: false, public: false },
                 Route { method: Method::Get, path: "v1/status".into(), pool: false, public: false },
+                Route { method: Method::Get, path: "v1/stats".into(), pool: false, public: false },
                 Route { method: Method::Get, path: "v1/route".into(), pool: true, public: false },
                 Route { method: Method::Get, path: "v1/nearest".into(), pool: true, public: false },
                 Route { method: Method::Get, path: "v1/table".into(), pool: true, public: false },
@@ -133,7 +135,23 @@ impl Module for RouterModule {
 
 /// The routes that run on the pool, which can wait for a load: `v1/status` says there is no graph.
 fn needs_the_graph(route: &str) -> bool {
-    route.starts_with("v1/") && route != "v1/status"
+    route.starts_with("v1/") && route != "v1/status" && route != "v1/stats"
+}
+
+/// Every option of `geko-router.toml` with the value it has and the one it would have without a
+/// file, and when a change of it takes effect.
+fn settings(config: &config::Config) -> serde_json::Value {
+    let d = config::Config::default();
+    let setting = |key: &str, value: serde_json::Value, default: serde_json::Value, apply: &str| serde_json::json!({ "key": key, "value": value, "default": default, "apply": apply });
+    serde_json::Value::Array(vec![
+        setting("osm.mirror", config.osm.mirror.as_str().into(), d.osm.mirror.as_str().into(), "rebuild"),
+        setting("packs.registry", config.packs.registry.as_str().into(), d.packs.registry.as_str().into(), "rebuild"),
+        setting("profiles.default", config.profiles.default.as_str().into(), d.profiles.default.as_str().into(), "rebuild"),
+        setting("traffic.enabled", config.traffic.enabled.into(), d.traffic.enabled.into(), "rebuild"),
+        setting("traffic.live", config.traffic.live.into(), d.traffic.live.into(), "restart"),
+        setting("sources", serde_json::json!(config.sources), serde_json::json!(d.sources), "rebuild"),
+        setting("serve.preload", config.serve.preload.into(), d.serve.preload.into(), "restart"),
+    ])
 }
 
 impl RouterModule {
@@ -141,13 +159,20 @@ impl RouterModule {
         let config = config::Config::parse(&context.config, &context.config_file)?;
         let packs = pack::Packs::new(&context.data_dir);
         let mode = config.mode();
-        Ok(Self { setup: Setup { config, scope: context.scope, data_dir: context.data_dir, data: context.data, packs }, server: serve::Server::new(mode), poller: Mutex::new(None), deferred: AtomicBool::new(false), pending: Mutex::new(None) })
+        let settings = settings(&config);
+        let setup = Setup { config, scope: context.scope, data_dir: context.data_dir, data: context.data, packs };
+        let own_sources = pipeline::licenses(&setup).into_iter().map(|l| l.source).collect();
+        let server = serve::Server::new(mode).with_status(settings, setup.data_dir.clone(), own_sources);
+        Ok(Self { setup, server, poller: Mutex::new(None), deferred: AtomicBool::new(false), pending: Mutex::new(None) })
     }
 
     fn load_from(&self, root: &Path) -> Result<()> {
         if self.setup.config.serve.preload {
             return self.load_now(root);
         }
+        // Left for later, but a part it cannot read is rejected now: geko goes on with the bundle
+        // it had, which it could not do from the first request.
+        graph_io::check(&root.join(pipeline::GRAPH_PART).join(pipeline::GRAPH_FILE))?;
         *self.pending.lock().unwrap_or_else(|e| e.into_inner()) = Some(root.to_owned());
         self.deferred.store(true, Ordering::Release);
         Ok(())
@@ -239,16 +264,48 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         bundle(tmp.path());
 
+        let ready = |module: &RouterModule| {
+            let response = module.handle(get("v1/status"));
+            assert_eq!(response.status, 200);
+            serde_json::from_slice::<serde_json::Value>(&response.body).unwrap()["ready"].as_bool().unwrap()
+        };
+
         let eager = module("", tmp.path());
         eager.load_from(tmp.path()).unwrap();
-        assert_eq!(eager.handle(get("v1/status")).status, 200);
+        assert!(ready(&eager));
 
         let lazy = module("[serve]\npreload = false", tmp.path());
         lazy.load_from(tmp.path()).unwrap();
-        assert_eq!(lazy.handle(get("v1/status")).status, 503, "not yet");
+        assert!(!ready(&lazy), "not yet");
         assert_eq!(lazy.handle(get("")).status, 200, "the demo needs no graph");
         assert_ne!(lazy.handle(get("v1/nearest")).status, 503);
-        assert_eq!(lazy.handle(get("v1/status")).status, 200);
+        assert!(ready(&lazy));
+    }
+
+    #[test]
+    fn the_status_says_how_it_is_set_up_and_the_stats_what_it_answered_also_without_a_graph() {
+        let tmp = tempfile::tempdir().unwrap();
+        let module = module("[serve]\npreload = false", tmp.path());
+        let body = |route: &str| serde_json::from_slice::<serde_json::Value>(&module.handle(get(route)).body).unwrap();
+        let status = body("v1/status");
+        assert_eq!((&status["bundle"], &status["nodes"], &status["last_build"]), (&serde_json::Value::Null, &serde_json::Value::Null, &serde_json::Value::Null));
+        let preload = status["settings"].as_array().unwrap().iter().find(|s| s["key"] == "serve.preload").unwrap();
+        assert_eq!((preload["value"].as_bool(), preload["default"].as_bool(), preload["apply"].as_str()), (Some(false), Some(true), Some("restart")));
+        assert_eq!(module.handle(get("v1/nearest")).status, 503);
+        let nearest = &body("v1/stats")["routes"][1];
+        assert_eq!((nearest["route"].as_str(), nearest["requests"].as_u64(), nearest["errors"].as_u64()), (Some("v1/nearest"), Some(1), Some(1)));
+    }
+
+    #[test]
+    fn a_graph_of_another_format_is_rejected_at_load_also_without_preload() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join(pipeline::GRAPH_PART);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(pipeline::GRAPH_FILE), b"GEKORG00 and more").unwrap();
+        for config in ["", "[serve]\npreload = false"] {
+            let err = module(config, tmp.path()).load_from(tmp.path()).unwrap_err().to_string();
+            assert!(err.contains("not a graph file"), "{err}");
+        }
     }
 
     #[test]
