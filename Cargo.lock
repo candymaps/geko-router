@@ -354,7 +354,7 @@ dependencies = [
 [[package]]
 name = "geko-artifact"
 version = "0.3.0"
-source = "git+https://github.com/candymaps/geko.git?tag=sdk-1#d028d4152a662a657dcfaf23d771a06285ab2a29"
+source = "git+https://github.com/candymaps/geko.git?rev=f44ef030a8fce3a8597e0ee2d198c49d4b5920df#f44ef030a8fce3a8597e0ee2d198c49d4b5920df"
 dependencies = [
  "ed25519-dalek",
  "geko-fetch",
@@ -369,7 +369,7 @@ dependencies = [
 [[package]]
 name = "geko-fetch"
 version = "0.3.0"
-source = "git+https://github.com/candymaps/geko.git?tag=sdk-1#d028d4152a662a657dcfaf23d771a06285ab2a29"
+source = "git+https://github.com/candymaps/geko.git?rev=f44ef030a8fce3a8597e0ee2d198c49d4b5920df#f44ef030a8fce3a8597e0ee2d198c49d4b5920df"
 dependencies = [
  "geko-module-sdk",
  "hex",
@@ -383,7 +383,7 @@ dependencies = [
 
 [[package]]
 name = "geko-module-router"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "chrono",
  "chrono-tz",
@@ -401,7 +401,7 @@ dependencies = [
 
 [[package]]
 name = "geko-module-router-dylib"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "geko-module-router",
  "geko-module-sdk",
@@ -412,7 +412,7 @@ dependencies = [
 [[package]]
 name = "geko-module-sdk"
 version = "0.3.0"
-source = "git+https://github.com/candymaps/geko.git?tag=sdk-1#d028d4152a662a657dcfaf23d771a06285ab2a29"
+source = "git+https://github.com/candymaps/geko.git?rev=f44ef030a8fce3a8597e0ee2d198c49d4b5920df#f44ef030a8fce3a8597e0ee2d198c49d4b5920df"
 dependencies = [
  "hex",
  "serde",
