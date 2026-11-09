@@ -383,7 +383,7 @@ dependencies = [
 
 [[package]]
 name = "geko-module-router"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "chrono-tz",
@@ -401,7 +401,7 @@ dependencies = [
 
 [[package]]
 name = "geko-module-router-dylib"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "geko-module-router",
  "geko-module-sdk",
