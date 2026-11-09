@@ -396,7 +396,7 @@ Comprobado el 2026-11-04 con el binario de `geko` y la `.so` del módulo (Madrid
 - **Cobertura de tráfico escasa y desigual.** Mitigación: tres capas con degradación y `traffic.coverage` explícito.
 - **Casar sensores con aristas mal** da retenciones fantasma. Mitigación: casado conservador (sentido, clase de vía, distancia máxima), con test por sensor.
 - **Licencias de las fuentes** sin confirmar (DGT, cita.lu): sin licencia clara no se empaqueta.
-- **Una fuente que cambia de formato o se da de baja** (varios conjuntos de la DGT figuran como obsoletos): el pack es versionado y una fuente caída degrada, no rompe.
+- **Una fuente que cambia de formato o se da de baja** (varios conjuntos de la DGT figuran como obsoletos): el pack es versionado y una fuente caída degrada, no rompe. Si una fuente de tráfico no responde en el build, se conserva su copia (`geko-fetch`) y, sin copia, el bundle sale sin ella: el informe la nombra, y no se anota la comprobación, para repetirla en una hora. Un histórico solo cuenta entero y con sus sensores: con parte de los meses saldrían otras velocidades.
 - **Memoria y tiempo de generación** de CCH con España completa: se mide en el paso 3 antes de seguir.
 - **Un fallo grave del módulo tira geko** (`DylibModule`, MODULES_PLAN.md, «Riesgos»).
 
