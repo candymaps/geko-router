@@ -53,16 +53,14 @@ jobs:
       - if: steps.affected.outputs.code == '1'
         run: ci/test.sh
       # What merging the pull request changes of the host it builds against, for pr-comment.yml to
-      # warn of it, whether or not the checks ran: `contract` (the `sdk-<contract>` tag of the SDK in
-      # Cargo.toml) and `sdk` (that dependency, in Cargo.toml or in what Cargo.lock locks).
+      # warn of it, whether or not the checks ran: `sdk` (that dependency, in Cargo.toml or in what
+      # Cargo.lock locks).
       - id: warnings
         if: always() && github.event_name == 'pull_request'
         run: |
           pin() { git show "$1:Cargo.toml" | grep '^geko-module-sdk' || true; }
           locked() { git show "$1:Cargo.lock" | grep -A3 '^name = "geko-module-sdk"' | grep '^source' || true; }
-          tag() { pin "$1" | sed -n 's/.*tag = "sdk-\([0-9]*\)".*/\1/p'; }
           warnings=
-          [ "$(tag HEAD^1)" = "$(tag HEAD)" ] || warnings="$warnings contract"
           [ "$(pin HEAD^1)$(locked HEAD^1)" = "$(pin HEAD)$(locked HEAD)" ] || warnings="$warnings sdk"
           echo "warnings=${warnings# }" >> "$GITHUB_OUTPUT"
           echo "warnings: ${warnings:-none}"

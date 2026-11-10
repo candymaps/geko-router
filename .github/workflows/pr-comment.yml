@@ -38,7 +38,6 @@ jobs:
             // What merging it changes of the host it builds against (ci.yml, `warnings`): a run from
             // before the field has none.
             const warningTexts = {
-              'contract': '⚠️ **Merging this pull request changes the contract**: `Cargo.toml` moves the SDK to another `sdk-<contract>` tag, which the host must already speak.',
               'sdk': '⚠️ **Merging this pull request changes the SDK**: `Cargo.toml` or `Cargo.lock` points `geko-module-sdk` to another version.',
             };
             const warnings = typeof pr.warnings === 'string' ? pr.warnings.split(' ').filter(Boolean) : [];
