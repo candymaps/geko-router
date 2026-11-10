@@ -2,8 +2,8 @@
 # - the country packs that changed, signed, in ghcr.io/candymaps/geko-router/countries/<country>
 #   (tags format-<n>, pack-<n> and <version>-<commit>);
 # - the module, with the version of Cargo.toml, if the push changed what goes into it (not only
-#   documentation or packs): ghcr.io/candymaps/geko-router, tags <version>-<commit>-<platform> and
-#   contract-<n>-<platform>, signed (ci/modules.sh), which geko downloads;
+#   documentation or packs): ghcr.io/candymaps/geko-router, tags <version>-<commit>-<platform>,
+#   signed (ci/modules.sh), which geko downloads;
 # - when that version has no GitHub release yet (it was raised in Cargo.toml), also the tag
 #   <version>-<platform> on the module, and the git tag v<version> on the pushed commit, with its
 #   GitHub release. Raising the version is how a release is made. A tag v<version> without a release
