@@ -3,18 +3,18 @@ resolver = "3"
 members = ["module", "module/dylib"]
 
 [workspace.package]
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 publish = false
 license = "AGPL-3.0-only"
 
 [workspace.dependencies]
 # The SDK, from the repository of the host (docs/MODULES_PLAN.md there), at its tag sdk-v<version>.
-geko-module-sdk = { git = "https://github.com/candymaps/geko.git", rev = "b26ea76afa13475be96e74f6bc9dbb420bcf07d5" }
+geko-module-sdk = { git = "https://github.com/candymaps/geko.git", tag = "sdk-v2.0.0" }
 geko-module-router = { path = "module" }
 tracing = "0.1"
-geko-fetch = { git = "https://github.com/candymaps/geko.git", rev = "b26ea76afa13475be96e74f6bc9dbb420bcf07d5" }
-geko-artifact = { git = "https://github.com/candymaps/geko.git", rev = "b26ea76afa13475be96e74f6bc9dbb420bcf07d5" }
+geko-fetch = { git = "https://github.com/candymaps/geko.git", tag = "sdk-v2.0.0" }
+geko-artifact = { git = "https://github.com/candymaps/geko.git", tag = "sdk-v2.0.0" }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [profile.release]
