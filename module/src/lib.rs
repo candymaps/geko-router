@@ -36,7 +36,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use geko_module_sdk::Result;
-use geko_module_sdk::module::{self, Built, BundleView, Context, Description, Method, Module, ModuleName, Purge, Request, Response, Route};
+use geko_module_sdk::module::{Built, BundleView, Context, Description, Method, Module, ModuleName, Purge, Request, Response, Route};
 
 use crate::pipeline::Setup;
 
@@ -61,7 +61,6 @@ impl Module for RouterModule {
         Description {
             name: ModuleName::new(NAME).expect("a valid name"),
             version: geko_module_sdk::module_version!().to_owned(),
-            contract: module::CONTRACT,
             routes: vec![
                 Route { method: Method::Get, path: "".into(), pool: false, public: true },
                 Route { method: Method::Get, path: "openapi.yaml".into(), pool: false, public: false },

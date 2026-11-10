@@ -353,8 +353,8 @@ dependencies = [
 
 [[package]]
 name = "geko-artifact"
-version = "0.3.0"
-source = "git+https://github.com/candymaps/geko.git?rev=f44ef030a8fce3a8597e0ee2d198c49d4b5920df#f44ef030a8fce3a8597e0ee2d198c49d4b5920df"
+version = "2.0.0"
+source = "git+https://github.com/candymaps/geko.git?rev=b26ea76afa13475be96e74f6bc9dbb420bcf07d5#b26ea76afa13475be96e74f6bc9dbb420bcf07d5"
 dependencies = [
  "ed25519-dalek",
  "geko-fetch",
@@ -368,8 +368,8 @@ dependencies = [
 
 [[package]]
 name = "geko-fetch"
-version = "0.3.0"
-source = "git+https://github.com/candymaps/geko.git?rev=f44ef030a8fce3a8597e0ee2d198c49d4b5920df#f44ef030a8fce3a8597e0ee2d198c49d4b5920df"
+version = "2.0.0"
+source = "git+https://github.com/candymaps/geko.git?rev=b26ea76afa13475be96e74f6bc9dbb420bcf07d5#b26ea76afa13475be96e74f6bc9dbb420bcf07d5"
 dependencies = [
  "geko-module-sdk",
  "hex",
@@ -411,8 +411,8 @@ dependencies = [
 
 [[package]]
 name = "geko-module-sdk"
-version = "0.3.0"
-source = "git+https://github.com/candymaps/geko.git?rev=f44ef030a8fce3a8597e0ee2d198c49d4b5920df#f44ef030a8fce3a8597e0ee2d198c49d4b5920df"
+version = "2.0.0"
+source = "git+https://github.com/candymaps/geko.git?rev=b26ea76afa13475be96e74f6bc9dbb420bcf07d5#b26ea76afa13475be96e74f6bc9dbb420bcf07d5"
 dependencies = [
  "hex",
  "serde",
