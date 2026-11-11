@@ -83,7 +83,7 @@ Read the full terms in [LICENSE](LICENSE).
 | Technology | What it is used for |
 |---|---|
 | **Rust** (2024 edition) | The module: its build stages and the service of the routes |
-| `geko-module-sdk` | The contract with the host, at the tag `sdk-<contract>` of [geko](https://github.com/candymaps/geko) |
+| `geko-module-sdk` | The contract with the host, at the tag `sdk-v<version>` of [geko](https://github.com/candymaps/geko) |
 | Customizable Contraction Hierarchies | Routes and matrices, with weights that change without contracting again |
 | [osmpbf](https://github.com/b-r-u/osmpbf) | Reading the OSM extracts |
 | [mimalloc](https://github.com/microsoft/mimalloc) | The allocator of the library of the module |
